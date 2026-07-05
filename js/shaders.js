@@ -14,6 +14,7 @@ uniform vec2  uResolution;
 uniform float uTime;          // simulation time, seconds
 uniform vec2  uLook;          // yaw, pitch
 uniform float uFovTan;
+uniform vec3  uCamPos;
 uniform vec3  uSeedOffset;
 uniform float uWindSpeed;
 
@@ -301,7 +302,7 @@ void main() {
   vec3 fwd = vec3(sy * cp, sp, -cy * cp);
   vec3 right = vec3(cy, 0.0, sy);
   vec3 upv = cross(right, fwd);
-  vec3 ro = vec3(0.0, 0.0025, 0.0);
+  vec3 ro = uCamPos;
   vec3 rd = normalize(fwd + right * (uv.x * uFovTan) + upv * (uv.y * uFovTan));
 
   float tGround = (rd.y < -0.0005) ? (-ro.y / rd.y) : 1e9;
@@ -401,6 +402,8 @@ void main() {
     float th = 0.002 + 0.007 * pow(vnoise(vec3(ang * 21.0, 1.7, 3.1)), 2.0)
              + 0.0025 * vnoise(vec3(ang * 87.0, 7.3, 9.1));
     float m = 1.0 - smoothstep(th, th + 0.0015, rd.y);
+    // The treeline is a ground-level illusion — fade it out once airborne.
+    m *= clamp(1.0 - (uCamPos.y - 0.25) * 1.5, 0.0, 1.0);
     vec3 silo = vec3(0.004, 0.005, 0.006) + uFlashAmb * 0.05;
     col = mix(col, silo, m);
   }

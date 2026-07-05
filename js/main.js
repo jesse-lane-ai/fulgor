@@ -41,7 +41,7 @@
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 
   const U = {};
-  ['uResolution', 'uTime', 'uLook', 'uFovTan', 'uSeedOffset', 'uWindSpeed',
+  ['uResolution', 'uTime', 'uLook', 'uFovTan', 'uCamPos', 'uSeedOffset', 'uWindSpeed',
    'uNumTowers', 'uBoundsMin', 'uBoundsMax', 'uRain', 'uShear', 'uWall',
    'uDensityMul', 'uCoverage',
    'uSteps', 'uLightSteps', 'uExposure', 'uHighDetail', 'uFlashAmb', 'uAmbColor',
@@ -103,7 +103,7 @@
     };
   }
 
-  const camera = { yaw: 0, pitch: 0.10, fovTan: 0.55 };
+  const camera = { pos: [0, 0.0025, 0], yaw: 0, pitch: 0.10, fovTan: 0.55, lock: false };
   let storm = null;
 
   // Supercell layout (see reference/anatomy-of-supercell.jpg): a main updraft
@@ -161,7 +161,8 @@
       wall: [cx - sdx * (0.8 + rand() * 0.6), cz - sdz * (0.8 + rand() * 0.6),
              0.8 + rand() * 0.5, 0.7 + rand() * 0.5],
     };
-    // Aim the camera at the main cell.
+    // Reset the camera to ground level, aimed at the main cell.
+    camera.pos = [0, 0.0025, 0];
     camera.yaw = Math.atan2(towers[0].x, -towers[0].z);
     camera.pitch = 0.10;
   }
@@ -350,16 +351,43 @@
   };
 
   // ---------- Camera controls ----------
+  // Lock mode aims at the storm's main updraft; dragging orbits around it.
+  // Free mode is classic fly-cam: drag to look, WASD + Space/C to move.
+  function lockTarget() {
+    const m = live.towers.length ? live.towers[0] : storm.towers[0];
+    return [m.x, Math.min(Math.max(m.top * 0.4, 2.5), 5.5), m.z];
+  }
+  function orbitDrag(dx, dy) {
+    const t = lockTarget();
+    const off = [camera.pos[0] - t[0], camera.pos[1] - t[1], camera.pos[2] - t[2]];
+    const radH = Math.hypot(off[0], off[2]);
+    const r = Math.hypot(radH, off[1]);
+    let ang = Math.atan2(off[0], off[2]) - dx * 0.003;
+    let el = Math.min(1.2, Math.max(-0.05, Math.atan2(off[1], radH) + dy * 0.003));
+    const nradH = r * Math.cos(el);
+    camera.pos = [
+      t[0] + Math.sin(ang) * nradH,
+      Math.max(t[1] + r * Math.sin(el), 0.003),
+      t[2] + Math.cos(ang) * nradH,
+    ];
+  }
+
   let dragging = false, lastX = 0, lastY = 0;
   canvas.addEventListener('pointerdown', e => {
     dragging = true; lastX = e.clientX; lastY = e.clientY;
     canvas.classList.add('dragging');
     canvas.setPointerCapture(e.pointerId);
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
   });
   canvas.addEventListener('pointermove', e => {
     if (!dragging) return;
-    camera.yaw += (e.clientX - lastX) * 0.0028;
-    camera.pitch = Math.min(1.1, Math.max(-0.15, camera.pitch + (e.clientY - lastY) * 0.0028));
+    const dx = e.clientX - lastX, dy = e.clientY - lastY;
+    if (camera.lock) {
+      orbitDrag(dx, dy);
+    } else {
+      camera.yaw += dx * 0.0028;
+      camera.pitch = Math.min(1.45, Math.max(-1.45, camera.pitch + dy * 0.0028));
+    }
     lastX = e.clientX; lastY = e.clientY;
   });
   canvas.addEventListener('pointerup', e => {
@@ -371,6 +399,37 @@
     e.preventDefault();
     camera.fovTan = Math.min(0.9, Math.max(0.22, camera.fovTan * (e.deltaY > 0 ? 1.08 : 0.925)));
   }, { passive: false });
+
+  // Fly keys (ignored while typing in the panel).
+  const keys = new Set();
+  const uiFocused = () => {
+    const a = document.activeElement;
+    return a && (a.tagName === 'INPUT' || a.tagName === 'SELECT' || a.tagName === 'BUTTON');
+  };
+  window.addEventListener('keydown', e => {
+    if (uiFocused()) return;
+    keys.add(e.code);
+    if (e.code === 'Space') e.preventDefault();
+  });
+  window.addEventListener('keyup', e => { keys.delete(e.code); });
+  window.addEventListener('blur', () => keys.clear());
+
+  function moveCamera(dt) {
+    if (!keys.size) return;
+    const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 12 : 3) * dt;
+    const sy = Math.sin(camera.yaw), cy = Math.cos(camera.yaw);
+    let mx = 0, my = 0, mz = 0;
+    if (keys.has('KeyW')) { mx += sy; mz -= cy; }
+    if (keys.has('KeyS')) { mx -= sy; mz += cy; }
+    if (keys.has('KeyA')) { mx -= cy; mz -= sy; }
+    if (keys.has('KeyD')) { mx += cy; mz += sy; }
+    if (keys.has('Space')) my += 1;
+    if (keys.has('KeyC')) my -= 1;
+    if (!mx && !my && !mz) return;
+    camera.pos[0] += mx * speed;
+    camera.pos[1] = Math.min(12, Math.max(0.003, camera.pos[1] + my * speed));
+    camera.pos[2] += mz * speed;
+  }
 
   // ---------- UI wiring ----------
   function bindRange(id, fmt) {
@@ -400,6 +459,15 @@
 
   const sunMotionEl = document.getElementById('sunMotion');
   sunMotionEl.addEventListener('change', () => { params.sunMotion = sunMotionEl.checked; });
+
+  const camLockEl = document.getElementById('camLock');
+  camLockEl.addEventListener('change', () => { camera.lock = camLockEl.checked; });
+  document.getElementById('camReset').addEventListener('click', () => {
+    camera.pos = [0, 0.0025, 0];
+    camera.yaw = Math.atan2(storm.towers[0].x, -storm.towers[0].z);
+    camera.pitch = 0.10;
+    camera.fovTan = 0.55;
+  });
 
   ['boltColor', 'flashColor', 'ambColor', 'sunColor'].forEach(id => {
     const el = document.getElementById(id);
@@ -515,6 +583,15 @@
     updateTowers(simT);
     lightning.update(simT);
 
+    moveCamera(dt);
+    if (camera.lock) {
+      const t = lockTarget();
+      const dx = t[0] - camera.pos[0], dy = t[1] - camera.pos[1], dz = t[2] - camera.pos[2];
+      const len = Math.max(Math.hypot(dx, dy, dz), 1e-4);
+      camera.yaw = Math.atan2(dx, -dz);
+      camera.pitch = Math.asin(dy / len);
+    }
+
     // Uniform packing.
     const q = QUALITY[params.quality];
     const flashCol = hexToRgb(params.flashColor);
@@ -535,6 +612,7 @@
     gl.uniform1f(U.uTime, simT);
     gl.uniform2f(U.uLook, camera.yaw, camera.pitch);
     gl.uniform1f(U.uFovTan, camera.fovTan);
+    gl.uniform3fv(U.uCamPos, camera.pos);
     gl.uniform3fv(U.uSeedOffset, storm.seedOffset);
     gl.uniform1f(U.uWindSpeed, params.wind);
     gl.uniform4fv(U.uTowers, towerData);

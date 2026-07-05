@@ -124,6 +124,12 @@
     <input type="range" id="exposure" min="0.4" max="2.5" step="0.05" value="1.1">
   </details>
 
+  <details open>
+    <summary>Camera</summary>
+    <label class="checkrow"><input type="checkbox" id="camLock"> Lock on storm</label>
+    <div class="row"><button id="camReset">Reset camera</button></div>
+  </details>
+
   <details>
     <summary>Render</summary>
     <label>Quality</label>
@@ -143,7 +149,7 @@
   </details>
 </div>
 
-<div id="hint">drag to look around · scroll to zoom</div>
+<div id="hint">drag to look · scroll to zoom · WASD + Space/C to fly · Shift to sprint</div>
 <div id="nogl">WebGL2 is not available in this browser.<br>Please use a recent Chrome, Edge or Firefox.</div>
 
 <script src="js/shaders.js"></script>

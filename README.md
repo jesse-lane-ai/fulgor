@@ -18,7 +18,11 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
 
 ## Controls
 
-- **Drag** to look around, **scroll** to zoom.
+- **Free camera** — drag to look, scroll to zoom, WASD to fly, Space/C for
+  up/down, Shift to sprint. You can fly into and through the storm.
+- **Lock on storm** (Camera panel) — the view stays aimed at the main updraft;
+  dragging orbits around the storm, and flying keeps it centered. "Reset
+  camera" returns to the ground-level view.
 - **Simulation** — speed (0 pauses), wind, seed + 🎲 New storm (regenerates the
   cell layout and noise field, re-aims the camera).
 - **⚡ Randomize everything** — rerolls all colors, storm structure, sky layers,
