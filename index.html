@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Thunderstorm — volumetric cumulonimbus simulation</title>
+<style>
+  :root{
+    --panel-bg: rgba(12, 15, 22, 0.78);
+    --panel-border: rgba(120, 140, 190, 0.25);
+    --text: #c7d0e0;
+    --text-dim: #7c8aa5;
+    --accent: #8fb0ff;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05070c;
+    font-family: "Segoe UI", system-ui, sans-serif; }
+  #view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #view.dragging { cursor: grabbing; }
+
+  #panel {
+    position: fixed; top: 12px; right: 12px; width: 256px; max-height: calc(100vh - 24px);
+    overflow-y: auto; padding: 12px 14px 10px;
+    background: var(--panel-bg); border: 1px solid var(--panel-border); border-radius: 10px;
+    backdrop-filter: blur(10px); color: var(--text); font-size: 12px; user-select: none;
+  }
+  #panel::-webkit-scrollbar { width: 6px; }
+  #panel::-webkit-scrollbar-thumb { background: #3a465e; border-radius: 3px; }
+  #panel h1 { font-size: 14px; margin: 0 0 8px; font-weight: 600; letter-spacing: 0.4px; color: #e6ecf7; }
+  details { margin-bottom: 6px; }
+  details summary {
+    cursor: pointer; font-weight: 600; color: var(--accent); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 1px; padding: 4px 0; list-style: none;
+  }
+  details summary::before { content: "▸ "; }
+  details[open] summary::before { content: "▾ "; }
+  label { display: block; margin: 7px 0 2px; color: var(--text-dim); }
+  label .val { float: right; color: var(--text); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; margin: 2px 0 4px; accent-color: var(--accent); height: 18px; }
+  .colorrow { display: flex; align-items: center; justify-content: space-between; margin: 6px 0; color: var(--text-dim); }
+  .colorrow input[type=color] { width: 44px; height: 22px; border: 1px solid var(--panel-border);
+    border-radius: 4px; background: none; padding: 0 2px; cursor: pointer; }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+  .checkrow { display: flex; gap: 7px; align-items: center; cursor: pointer; }
+  .checkrow input { accent-color: var(--accent); margin: 0; }
+  input[type=number] { width: 76px; background: #0d1220; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 5px; padding: 4px 6px; font-size: 12px; }
+  button {
+    flex: 1; background: #202b45; color: #dbe4f5; border: 1px solid var(--panel-border);
+    border-radius: 6px; padding: 5px 8px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #2a3757; }
+  select { width: 100%; background: #0d1220; color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 5px; padding: 4px; font-size: 12px; margin: 2px 0 4px; }
+  #fps { color: var(--text-dim); font-size: 11px; margin-top: 6px; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px; color: rgba(190, 205, 230, 0.55);
+    font-size: 12px; letter-spacing: 0.3px; pointer-events: none; transition: opacity 2s;
+  }
+  #nogl {
+    display: none; position: fixed; inset: 0; place-content: center; text-align: center;
+    color: #d8e0ee; font-size: 15px; padding: 40px;
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+
+<div id="panel">
+  <h1>⛈&nbsp; Thunderstorm</h1>
+  <div class="row" style="margin-bottom:8px">
+    <button id="randomizeAll" title="Randomize colors, structure and weather (keeps speed and render settings)">⚡ Randomize everything</button>
+  </div>
+
+  <details open>
+    <summary>Simulation</summary>
+    <label>Speed <span class="val" id="v-speed">1.00×</span></label>
+    <input type="range" id="speed" min="0" max="4" step="0.05" value="1">
+    <label>Wind <span class="val" id="v-wind">1.00</span></label>
+    <input type="range" id="wind" min="0" max="3" step="0.05" value="1">
+    <div class="row">
+      <input type="number" id="seed" value="1234" min="0" max="999999" step="1" title="Storm seed">
+      <button id="reseed">🎲 New storm</button>
+    </div>
+  </details>
+
+  <details open>
+    <summary>Clouds</summary>
+    <label>Storm size <span class="val" id="v-size">1.00×</span></label>
+    <input type="range" id="size" min="0.5" max="2" step="0.05" value="1">
+    <label>Density <span class="val" id="v-density">1.00</span></label>
+    <input type="range" id="density" min="0.4" max="1.8" step="0.05" value="1">
+    <label>Coverage <span class="val" id="v-coverage">1.00</span></label>
+    <input type="range" id="coverage" min="0.5" max="1.5" step="0.05" value="1">
+    <label>Mid-level clouds <span class="val" id="v-midClouds">0.30</span></label>
+    <input type="range" id="midClouds" min="0" max="1" step="0.05" value="0.3">
+  </details>
+
+  <details open>
+    <summary>Lightning</summary>
+    <label>Frequency <span class="val" id="v-freq">1.00</span></label>
+    <input type="range" id="freq" min="0.1" max="4" step="0.05" value="1">
+    <label>Intensity <span class="val" id="v-intensity">1.00</span></label>
+    <input type="range" id="intensity" min="0.2" max="2.5" step="0.05" value="1">
+    <label>Duration <span class="val" id="v-duration">1.00×</span></label>
+    <input type="range" id="duration" min="0.3" max="3" step="0.05" value="1">
+    <div class="colorrow">Bolt color <input type="color" id="boltColor" value="#eee9ff"></div>
+    <div class="colorrow">Cloud flash <input type="color" id="flashColor" value="#d7c9ff"></div>
+  </details>
+
+  <details open>
+    <summary>Atmosphere</summary>
+    <div class="colorrow">Ambient light <input type="color" id="ambColor" value="#2e3b55"></div>
+    <div class="colorrow">Sun <input type="color" id="sunColor" value="#ff9e63"></div>
+    <label class="checkrow"><input type="checkbox" id="sunMotion"> Moving sun (day cycle)</label>
+    <label>Sun azimuth <span class="val" id="v-sunAz">70°</span></label>
+    <input type="range" id="sunAz" min="-180" max="180" step="1" value="70">
+    <label>Sun height <span class="val" id="v-sunEl">6.0°</span></label>
+    <input type="range" id="sunEl" min="-10" max="60" step="0.5" value="6">
+    <label>Background clouds <span class="val" id="v-bgClouds">0.50</span></label>
+    <input type="range" id="bgClouds" min="0" max="1" step="0.05" value="0.5">
+    <label>Cirrus <span class="val" id="v-cirrus">0.55</span></label>
+    <input type="range" id="cirrus" min="0" max="1" step="0.05" value="0.55">
+    <label>Exposure <span class="val" id="v-exposure">1.10</span></label>
+    <input type="range" id="exposure" min="0.4" max="2.5" step="0.05" value="1.1">
+  </details>
+
+  <details>
+    <summary>Render</summary>
+    <label>Quality</label>
+    <select id="quality">
+      <option value="low">Low</option>
+      <option value="medium">Medium</option>
+      <option value="high" selected>High</option>
+      <option value="ultra">Ultra</option>
+    </select>
+    <label>Resolution</label>
+    <select id="scale">
+      <option value="0.5">50%</option>
+      <option value="0.75">75%</option>
+      <option value="1" selected>100%</option>
+    </select>
+    <div id="fps">— fps</div>
+  </details>
+</div>
+
+<div id="hint">drag to look around · scroll to zoom</div>
+<div id="nogl">WebGL2 is not available in this browser.<br>Please use a recent Chrome, Edge or Firefox.</div>
+
+<script src="js/shaders.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
