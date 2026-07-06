@@ -156,7 +156,7 @@
       seedOffset: [rand() * 97, rand() * 97, rand() * 97],
       rain: [cx + sdx * rainDist, cz + sdz * rainDist, mainR * 0.95, 0.7 + rand() * 0.5],
       wall: [cx - sdx * (0.8 + rand() * 0.6), cz - sdz * (0.8 + rand() * 0.6),
-             1.1 + rand() * 0.6, 0.55 + rand() * 0.4],
+             1.1 + rand() * 0.6, 0.45 + rand() * 0.35],
     };
     stormOffset[0] = 0; stormOffset[1] = 0;
     // Reset the camera to ground level, aimed at the main cell.

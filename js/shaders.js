@@ -185,7 +185,7 @@ float cloudDensity(vec3 p, bool detail) {
     d = clamp((max(s, 0.0) + wallM * 0.9 - thr * (1.0 - n)) * 2.6, 0.0, 1.0);
     if (detail && d > 0.0 && d < 0.9) {
       float e = fbm3(q * 4.1 + vec3(uTime * 0.01, 0.0, 0.0));
-      d = clamp(d - (1.0 - e) * (1.0 - d) * 0.55 * (1.0 - wallM), 0.0, 1.0);
+      d = clamp(d - (1.0 - e) * (1.0 - d) * 0.55 * (1.0 - wallM * 0.5), 0.0, 1.0);
     }
     d *= uDensityMul;
   }
@@ -371,15 +371,18 @@ void main() {
         // short light march can't see the cloud mass above, so darken there
         // (both direct sun and the sky ambient, which is mostly blocked too).
         float under = 0.0;
-        if (pos.y < CLOUD_BASE + 0.2) {
+        if (pos.y < CLOUD_BASE + 0.25) {
           float r1 = length(pos.xz - uRain.xy) / (uRain.z * 1.6);
           float r2 = length(pos.xz - uWall.xy) / (uWall.z * 2.5);
           under = smoothstep(0.0, 0.4, clamp(1.0 - min(r1, r2), 0.0, 1.0));
-          vis *= mix(1.0, 0.10, under);
+          // Ramp in gradually below the base so the lowering shades smoothly
+          // into the storm above instead of switching dark at a seam.
+          under *= 1.0 - smoothstep(CLOUD_BASE - 0.30, CLOUD_BASE + 0.25, pos.y);
+          vis *= mix(1.0, 0.12, under);
         }
         vec3 S = uSunColor * 4.0 * vis * (ph * 1.5 + 0.05);
         float hn = clamp((pos.y - CLOUD_BASE) / 9.0, 0.0, 1.0);
-        S += uAmbColor * (0.3 + 0.7 * hn) * 0.9 * mix(1.0, 0.30, under) + uFlashAmb * 0.5;
+        S += uAmbColor * (0.3 + 0.7 * hn) * 0.9 * mix(1.0, 0.55, under) + uFlashAmb * 0.5;
         for (int j = 0; j < 3; j++) {
           float I = uFlashPos[j].w;
           if (I > 0.002) {
