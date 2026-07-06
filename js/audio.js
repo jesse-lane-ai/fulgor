@@ -10,7 +10,7 @@
 // bandpass howled by two detuned gust LFOs; and a deep lowpassed ambient
 // storm-presence rumble carried over from the previous sim engine.
 //
-// Thunder one-shots are HRTF-panned from the flash bearing: an instant
+// Thunder one-shots are equal-power-panned from the flash bearing: an instant
 // electrostatic fizz at flash time, then — after a compressed distance delay
 // scaled by playback speed — a waveshaped shattering crack, a fluttering
 // "tearing canvas" peal with staggered branch micro-claps, and layered
@@ -23,7 +23,7 @@ window.StormAudio = (function () {
   let masterVol = 0.7;
 
   // Buses
-  let master = null, comp = null;
+  let master = null, comp = null, limiter = null;
   let rainGain = null, windGain = null, thunderGain = null, ambientGain = null;
 
   // Bed nodes touched per frame by update()
@@ -33,7 +33,14 @@ window.StormAudio = (function () {
   // Shared procedural noise buffers
   let pinkNoiseBuffer = null, whiteNoiseBuffer = null;
 
-  const SPATIAL_MODE = 'HRTF';
+  // 'equalpower' keeps the left/right + distance cues at a tiny fraction of
+  // the cost of HRTF convolution (which starved the audio thread and caused
+  // dropouts once a few strikes overlapped).
+  const SPATIAL_MODE = 'equalpower';
+  // Max thunder strikes allowed to run their heavy Layer C rumble stack at
+  // once; extra overlapping strikes still get the crack + tear peal.
+  const MAX_RUMBLE_VOICES = 3;
+  let activeRumbleVoices = 0;
   // Last bed levels from update(); rain also drives the drop generator.
   const levels = { rain: 0, wind: 0, ambient: 0 };
 
@@ -49,15 +56,17 @@ window.StormAudio = (function () {
 
   function makeOneShot() {
     const entry = {
-      nodes: [], intervals: [], tid: 0,
+      nodes: [], intervals: [], tid: 0, onCancel: null,
       cancel() {
+        if (!oneShots.has(entry)) return; // idempotent: timeout + teardown may both fire
+        oneShots.delete(entry);
         clearTimeout(entry.tid);
         for (const id of entry.intervals) clearInterval(id);
         for (const n of entry.nodes) {
           if (typeof n.stop === 'function') { try { n.stop(0); } catch (e) {} }
           try { n.disconnect(); } catch (e) {}
         }
-        oneShots.delete(entry);
+        if (entry.onCancel) { try { entry.onCancel(); } catch (e) {} }
       },
       arm(lifeMs) { entry.tid = setTimeout(() => entry.cancel(), lifeMs); },
     };
@@ -111,7 +120,7 @@ window.StormAudio = (function () {
     return curve;
   }
 
-  // HRTF panner used by all thunder layers. Listener stays at the origin
+  // Equal-power panner used by all thunder layers. Listener stays at the origin
   // facing -z; positions are in meters. refDistance 1500 = full volume at
   // 1.5 km or closer, inverse rolloff beyond.
   function makePanner(px, py, pz, t) {
@@ -132,18 +141,27 @@ window.StormAudio = (function () {
 
   // ---------- Audio graph ----------
   function buildGraph() {
-    // Soft safety compressor kept from the previous sim engine — the crack
-    // plus 5-10 stacked rumbles can sum hot on close strikes.
+    // Chain: beds/thunder -> comp (soft glue) -> limiter (brickwall) ->
+    // master -> destination. The soft compressor alone let close strikes sum
+    // several times past full scale and hard-clip the destination (audible
+    // digital distortion); the zero-knee 20:1 limiter is a true ceiling.
     master = ctx.createGain();
     master.gain.value = masterVol;
     master.connect(ctx.destination);
+    limiter = ctx.createDynamicsCompressor();
+    limiter.threshold.value = -3;
+    limiter.knee.value = 0;
+    limiter.ratio.value = 20;
+    limiter.attack.value = 0.002;
+    limiter.release.value = 0.1;
+    limiter.connect(master);
     comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -18;
     comp.knee.value = 12;
     comp.ratio.value = 6;
     comp.attack.value = 0.003;
     comp.release.value = 0.3;
-    comp.connect(master);
+    comp.connect(limiter);
 
     rainGain = ctx.createGain(); rainGain.gain.value = 0; rainGain.connect(comp);
     windGain = ctx.createGain(); windGain.gain.value = 0; windGain.connect(comp);
@@ -216,8 +234,8 @@ window.StormAudio = (function () {
   }
 
   // ---------- Rain drop generator ----------
-  // Tiny high-passed white-noise ticks panned in a small sphere around the
-  // head. A single chained timeout, gated on running() and torn down by
+  // Tiny high-passed white-noise ticks stereo-panned around the head. A
+  // single chained timeout, gated on running() and torn down by
   // stopDrops() so a hidden tab never keeps scheduling.
   function startDrops() {
     if (dropTimer) return;
@@ -226,7 +244,9 @@ window.StormAudio = (function () {
       const intensity = levels.rain;
       if (intensity > 0.05) {
         scheduleRainDrop(intensity);
-        const base = 100 - intensity * 80; // heavier rain → denser drops
+        // Heavier rain → denser drops, but floored at 35 ms so a torrential
+        // storm can't runaway-spawn drop voices.
+        const base = Math.max(35, 100 - intensity * 80);
         dropTimer = setTimeout(tick, base + Math.random() * base);
       } else {
         dropTimer = setTimeout(tick, 500); // idle poll while it's dry
@@ -257,28 +277,22 @@ window.StormAudio = (function () {
     hp.type = 'highpass';
     hp.frequency.setValueAtTime(4000 + Math.random() * 3000, t);
 
-    // A drop lands somewhere very close, slightly above the listener.
-    const panner = ctx.createPanner();
-    panner.panningModel = SPATIAL_MODE;
-    panner.distanceModel = 'inverse';
-    const angle = Math.random() * Math.PI * 2;
-    const radius = 0.5 + Math.random() * 3.5;
-    const dx = Math.cos(angle) * radius;
-    const dz = Math.sin(angle) * radius;
-    const dy = 0.2 + Math.random() * 2.5;
-    if (panner.positionX && typeof panner.positionX.setValueAtTime === 'function') {
-      panner.positionX.setValueAtTime(dx, t);
-      panner.positionY.setValueAtTime(dy, t);
-      panner.positionZ.setValueAtTime(dz, t);
+    // A drop lands somewhere close by: a plain stereo pan is plenty for a
+    // 20 ms tick and orders of magnitude cheaper than the per-drop HRTF
+    // PannerNode this used to allocate (10-50 HRTF convolutions/sec).
+    src.connect(hp); hp.connect(g);
+    if (ctx.createStereoPanner) {
+      const pan = ctx.createStereoPanner();
+      pan.pan.setValueAtTime(Math.random() * 2 - 1, t);
+      g.connect(pan); pan.connect(rainGain);
+      entry.nodes.push(pan);
     } else {
-      panner.setPosition(dx, dy, dz);
+      g.connect(rainGain);
     }
-
-    src.connect(hp); hp.connect(g); g.connect(panner); panner.connect(rainGain);
     src.start(t);
     src.stop(t + decay + 0.05);
 
-    entry.nodes.push(src, hp, g, panner);
+    entry.nodes.push(src, hp, g);
     entry.arm((decay + 0.15) * 1000);
   }
 
@@ -313,7 +327,7 @@ window.StormAudio = (function () {
 
   // The main event: shattering crack + tearing-canvas fluttering peal with
   // staggered branch micro-claps + layered dual-path bass rumbles, all fed
-  // through one HRTF panner per strike. dist is in meters.
+  // through one equal-power panner per strike. dist is in meters.
   function scheduleThunderSynth(o) {
     const { dist, intensity, isCG, delay, px, py, pz } = o;
     const strikeTime = ctx.currentTime + delay;
@@ -329,7 +343,7 @@ window.StormAudio = (function () {
     // ground nearby and get the full crack, in-cloud flashes only a hint.
     if (dist < 6000) {
       const distanceFactor = Math.max(0, 1 - dist / 6000);
-      const crackVolume = 0.9 * intensity * Math.pow(distanceFactor, 1.5) * (isCG ? 1.0 : 0.35);
+      const crackVolume = 0.8 * intensity * Math.pow(distanceFactor, 1.5) * (isCG ? 1.0 : 0.35);
       if (crackVolume > 0.01) {
         const src = ctx.createBufferSource();
         src.buffer = whiteNoiseBuffer;
@@ -342,7 +356,7 @@ window.StormAudio = (function () {
 
         const shaper = ctx.createWaveShaper();
         shaper.curve = distortionCurve(80);
-        shaper.oversample = '4x';
+        shaper.oversample = '2x'; // was 4x — inaudible difference, half the cost
 
         const bp = ctx.createBiquadFilter();
         bp.type = 'bandpass';
@@ -401,7 +415,7 @@ window.StormAudio = (function () {
       entry.nodes.push(tearSrc, tearFilter, vca, tearGainNode, flutterLfo, flutterDepth);
       end = Math.max(end, tearDuration + 0.1);
 
-      const numMicroClaps = 3 + Math.round(intensity * 4);
+      const numMicroClaps = 2 + Math.round(intensity * 2); // 2-4 (was 3-7)
       for (let j = 0; j < numMicroClaps; j++) {
         const clapStagger = j * 0.18 + (Math.random() * 0.15) * (1 + dist / 4000);
         const clapStart = strikeTime + clapStagger;
@@ -418,6 +432,7 @@ window.StormAudio = (function () {
 
         const shaper = ctx.createWaveShaper();
         shaper.curve = distortionCurve(45);
+        shaper.oversample = '2x';
 
         const bp = ctx.createBiquadFilter();
         bp.type = 'bandpass';
@@ -436,8 +451,24 @@ window.StormAudio = (function () {
     // harmonics. Each staggered rumble runs two parallel paths: pure
     // sub-bass (headphones/subwoofers) and gently saturated low-mids that
     // carry the weight on phone/laptop speakers.
-    const numRumbles = 5 + Math.round(intensity * 5);
+    //
+    // This is the heavy layer (looping sources + shapers for up to ~13 s),
+    // so it is capped: when MAX_RUMBLE_VOICES strikes already have live
+    // rumbles, an overlapping strike keeps its crack + tear peal but skips
+    // the rumble stack instead of starving the audio thread.
+    if (activeRumbleVoices >= MAX_RUMBLE_VOICES) {
+      entry.arm((delay + end + 1.5) * 1000);
+      return;
+    }
+    activeRumbleVoices++;
+    entry.onCancel = () => { activeRumbleVoices = Math.max(0, activeRumbleVoices - 1); };
+
+    const numRumbles = 3 + Math.round(intensity * 2); // 3-5 (was 5-10)
     const baseRumbleGain = (0.75 + intensity * 0.45) * Math.max(0.2, 1800 / (1800 + dist));
+    // Normalize by voice count so the summed rumble bus stays roughly
+    // constant no matter how many layers stack (the un-normalized sum used
+    // to reach several times full scale and hard-clip the output).
+    const rumbleNorm = 2.0 / numRumbles;
 
     for (let i = 0; i < numRumbles; i++) {
       const src = ctx.createBufferSource();
@@ -446,7 +477,7 @@ window.StormAudio = (function () {
 
       const rumbleStagger = i * 0.5 + (Math.random() * 0.45) * (1 + dist / 2500);
       const rumbleStart = strikeTime + rumbleStagger;
-      const rumbleVol = baseRumbleGain * (0.45 + Math.random() * 0.55) * (1 - (i / numRumbles) * 0.45);
+      const rumbleVol = baseRumbleGain * rumbleNorm * (0.45 + Math.random() * 0.55) * (1 - (i / numRumbles) * 0.45);
       const rumbleAttack = 0.15 + Math.random() * 0.55;
       const rumbleDuration = 3.0 + intensity * 6.0 + Math.random() * 4.0;
 
@@ -469,7 +500,7 @@ window.StormAudio = (function () {
       // Path 2: warm saturated low-mids.
       const shaper = ctx.createWaveShaper();
       shaper.curve = distortionCurve(35);
-      shaper.oversample = '4x';
+      shaper.oversample = 'none'; // was 4x on every rumble layer — the top CPU cost
       const lpH = ctx.createBiquadFilter();
       lpH.type = 'lowpass';
       const harmonicCutoff = Math.max(160, 480 - dist / 18);
@@ -484,25 +515,15 @@ window.StormAudio = (function () {
       src.stop(rumbleStart + rumbleAttack + rumbleDuration + 0.1);
       entry.nodes.push(src, lp1, lp2, shaper, lpH, g);
       end = Math.max(end, rumbleStagger + rumbleAttack + rumbleDuration + 0.1);
+    }
 
-      // Slow lateral drift, as if the echo shifts along the storm front.
+    // Slow lateral drift, as if the echo shifts along the storm front: one
+    // scheduled automation on the strike's shared panner. (Previously every
+    // rumble ran its own 200 ms setInterval rewriting positionX — 5-10
+    // timers per strike all fighting over the same param.)
+    if (panner.positionX && typeof panner.positionX.linearRampToValueAtTime === 'function') {
       const driftSpeed = (Math.random() - 0.5) * 60; // up to ±30 m/s
-      let curX = px;
-      const iv = setInterval(() => {
-        if (!ctx || ctx.state === 'closed' || ctx.currentTime > rumbleStart + rumbleDuration) {
-          clearInterval(iv);
-          return;
-        }
-        curX += driftSpeed * 0.2;
-        try {
-          if (panner.positionX && typeof panner.positionX.setValueAtTime === 'function') {
-            panner.positionX.setValueAtTime(curX, ctx.currentTime);
-          } else {
-            panner.setPosition(curX, py, pz);
-          }
-        } catch (e) { clearInterval(iv); }
-      }, 200);
-      entry.intervals.push(iv);
+      panner.positionX.linearRampToValueAtTime(px + driftSpeed * end, strikeTime + end);
     }
 
     entry.arm((delay + end + 1.5) * 1000);
