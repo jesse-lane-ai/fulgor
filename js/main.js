@@ -178,7 +178,7 @@
   // (about the main updraft) with the convective growth cycles applied.
   const live = { towers: [], rain: [0, 0, 0, 0], wall: [0, 0, 0, 0],
                  boundsMin: [0, 0, 0], boundsMax: [0, 0, 0], shearZ: 0,
-                 stageFx: { grow: 1, rain: 1, wall: 1, ltg: 1, decay: 0 } };
+                 stageFx: { grow: 1, rain: 1, rainSize: 1, wall: 1, ltg: 1, decay: 0 } };
   const towerData = new Float32Array(32);
   const sstep = (a, b, x) => {
     x = Math.min(Math.max((x - a) / (b - a), 0), 1);
@@ -193,12 +193,19 @@
   //         erodes to wisps (uDecay) and the anvil remnant fades last.
   // At stage 0.5 all factors are exactly 1/0, so the default view is the
   // same mature supercell as before this control existed.
+  // The rain band's own decline (and lightning's) must finish *before*
+  // uDecay meaningfully erodes the cloud base — otherwise the rain outlives
+  // the base that's supposed to hide it and ends up floating in open air.
+  // It also shrinks in step with its strength so it visibly narrows into a
+  // wisp rather than just going translucent at full size.
   function stageFactors(g) {
+    const rain = sstep(0.32, 0.48, g) * (1 - sstep(0.58, 0.72, g));
     return {
       grow: 0.30 + 0.70 * sstep(0.02, 0.45, g),
-      rain: sstep(0.30, 0.50, g) * (1 - sstep(0.62, 0.95, g)),
-      wall: sstep(0.30, 0.48, g) * (1 - sstep(0.60, 0.85, g)),
-      ltg:  sstep(0.26, 0.45, g) * (1 - sstep(0.60, 0.95, g)),
+      rain,
+      rainSize: 0.55 + 0.45 * rain,
+      wall: sstep(0.30, 0.48, g) * (1 - sstep(0.55, 0.70, g)),
+      ltg:  sstep(0.26, 0.45, g) * (1 - sstep(0.55, 0.75, g)),
       decay: sstep(0.55, 1.00, g),
     };
   }
@@ -244,7 +251,7 @@
     live.boundsMax = [mxx, mxy + 1.3, mxz];
     live.rain = [cx + (storm.rain[0] - cx) * s + stormOffset[0],
                  cz + (storm.rain[1] - cz) * s + stormOffset[1],
-                 storm.rain[2] * s, storm.rain[3] * fx.rain];
+                 storm.rain[2] * s * fx.rainSize, storm.rain[3] * fx.rain];
     live.wall = [cx + (storm.wall[0] - cx) * s + stormOffset[0],
                  cz + (storm.wall[1] - cz) * s + stormOffset[1],
                  storm.wall[2] * s, storm.wall[3] * fx.wall];
