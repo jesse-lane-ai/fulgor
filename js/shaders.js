@@ -141,7 +141,10 @@ float shapeField(vec3 p) {
       if (i == 0 && hn < 0.75 && tallness > 0.5) {
         float ang = atan(v, u);
         float ph = vnoise(vec3(2.7, p.y * 0.9, 5.3) + uSeedOffset) * 6.0;
-        float ledge = sin(p.y * 6.5 + ph + ang * 0.7) * 0.6
+        // Chirped spacing: rims bunch tightly just above the base and
+        // spread out with height, like the reference plate stacks.
+        float chirp = p.y * (9.0 - p.y * 0.45);
+        float ledge = sin(chirp + ph + ang * 0.7) * 0.6
                     + sin(p.y * 2.6 + ph * 0.5 - ang * 0.5) * 0.4;
         float lm = smoothstep(0.02, 0.12, hn) * (1.0 - smoothstep(0.50, 0.75, hn));
         r *= 1.0 - ledge * 0.15 * lm;
