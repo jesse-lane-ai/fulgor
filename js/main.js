@@ -940,6 +940,20 @@
   let fpsAcc = 0, fpsN = 0, fpsLast = last;
   const fpsEl = document.getElementById('fps');
 
+  // ---- Adaptive quality ----
+  // Start cheap and climb only as fast as the GPU proves it can keep up, so the
+  // first frames are always light. This guarantees a weak or headless renderer
+  // (e.g. the preview's software WebGL) never stalls for seconds on a full
+  // high-quality frame — which was timing out and crashing the tooling. The
+  // Quality dropdown (params.quality) is the CEILING; we never exceed it, but
+  // we drop below it when frames run slow. Render cost is measured by forcing
+  // the pipeline to finish (a 1x1 readPixels) so it works even when the tab is
+  // hidden and the loop is driven one frame at a time via renderOnce().
+  const QORDER = ['minimal', 'low', 'medium', 'high', 'ultra'];
+  let activeQi = 0;                       // current adaptive level
+  let qSlow = 0, qFast = 0;               // consecutive slow / fast frames
+  const probePixel = new Uint8Array(4);
+
   function frame() {
     const now = performance.now() / 1000;
     const dt = Math.min(now - last, 0.1);
@@ -1028,8 +1042,10 @@
       camera.pitch = Math.asin(dy / len);
     }
 
-    // Uniform packing.
-    const q = QUALITY[params.quality];
+    // Uniform packing. Quality is the adaptive level, capped at the dropdown.
+    const ceilQi = Math.max(0, QORDER.indexOf(params.quality));
+    if (activeQi > ceilQi) activeQi = ceilQi; // dropdown lowered → clamp now
+    const q = QUALITY[QORDER[activeQi]];
     const flashCol = hexToRgb(params.flashColor);
     const boltCol = hexToRgb(params.boltColor);
     // Ambient light picker is now an optional tint/strength override on the
@@ -1147,10 +1163,23 @@
     }
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+    // Measure true render cost — readPixels blocks until the frame finishes —
+    // and nudge the adaptive level. React fast when slow (drop after 2 heavy
+    // frames so a weak renderer never queues multi-second work), climb slowly
+    // and cautiously when there's headroom (hysteresis avoids oscillation).
+    const probeT = performance.now();
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, probePixel);
+    const renderMs = performance.now() - probeT;
+    if (renderMs > 55 && activeQi > 0) {
+      qFast = 0; if (++qSlow >= 2) { activeQi--; qSlow = 0; }
+    } else if (renderMs < 14 && activeQi < ceilQi) {
+      qSlow = 0; if (++qFast >= 8) { activeQi++; qFast = 0; }
+    } else { qSlow = 0; qFast = 0; }
+
     fpsAcc += 1;
     if (now - fpsLast > 0.5) {
       fpsEl.textContent = Math.round(fpsAcc / (now - fpsLast)) + ' fps · ' +
-        canvas.width + '×' + canvas.height;
+        canvas.width + '×' + canvas.height + ' · ' + QORDER[activeQi];
       fpsAcc = 0; fpsLast = now;
     }
   }
