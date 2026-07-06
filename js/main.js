@@ -61,6 +61,7 @@
     speed: 1.0, wind: 1.0, motion: 1.0, seed: 1234,
     stage: 0.5, lifecycle: false,
     sound: false, volume: 0.7,
+    mixRain: 1.0, mixWind: 1.0, mixThunder: 1.0, mixAmbient: 1.0,
     density: 1.0, coverage: 1.0, size: 1.0,
     freq: 1.0, intensity: 1.0, duration: 1.0,
     boltColor: '#eee9ff', flashColor: '#d7c9ff',
@@ -641,6 +642,10 @@
   const stageName = v => (v < 0.30 ? 'cumulus' : v < 0.62 ? 'mature' : 'dissipating');
   bindRange('stage', stageName);
   bindRange('volume');
+  bindRange('mixRain');
+  bindRange('mixWind');
+  bindRange('mixThunder');
+  bindRange('mixAmbient');
   bindRange('density');
   bindRange('coverage');
   bindRange('size', v => v.toFixed(2) + '×');
@@ -696,12 +701,21 @@
   const soundEl = document.getElementById('sound');
   soundEl.addEventListener('change', () => {
     params.sound = soundEl.checked;
-    if (params.sound) { StormAudio.enable(); StormAudio.setMaster(params.volume); }
+    if (params.sound) { StormAudio.enable(); StormAudio.setMaster(params.volume); pushMix(); }
     else StormAudio.disable();
   });
   document.getElementById('volume').addEventListener('input', () => {
     if (params.sound) StormAudio.setMaster(params.volume);
   });
+  // Per-sound mixer trims. Push all four on any change (and once on enable so
+  // non-default slider positions take effect when sound is switched on).
+  const pushMix = () => StormAudio.setMix({
+    rain: params.mixRain, wind: params.mixWind,
+    thunder: params.mixThunder, ambient: params.mixAmbient,
+  });
+  for (const id of ['mixRain', 'mixWind', 'mixThunder', 'mixAmbient']) {
+    document.getElementById(id).addEventListener('input', pushMix);
+  }
 
   const camLockEl = document.getElementById('camLock');
   camLockEl.addEventListener('change', () => { camera.lock = camLockEl.checked; });

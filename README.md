@@ -91,7 +91,10 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
   peal with rapid-fire branch claps, and long rolling bass rumbles — arriving
   sooner and punchier up close, later and duller far away, spatially panned
   to where the flash happened. The whole bed follows the lifecycle stage: a
-  cumulus or dissipated storm is quiet.
+  cumulus or dissipated storm is quiet. A per-sound mixer (Rain, Wind,
+  Thunder, Ambient rumble) trims each layer independently on top of the
+  master volume, so you can balance the storm to taste. Sound/volume and the
+  mixer are local playback preferences, not part of a shared storm.
 - **Render** — quality (raymarch step counts) and resolution scale.
 
 URL overrides: `?quality=minimal|low|medium|high|ultra&scale=0.5` (used for

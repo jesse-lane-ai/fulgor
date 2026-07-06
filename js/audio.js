@@ -43,6 +43,10 @@ window.StormAudio = (function () {
   let activeRumbleVoices = 0;
   // Last bed levels from update(); rain also drives the drop generator.
   const levels = { rain: 0, wind: 0, ambient: 0 };
+  // Per-sound user mixer trims (0..~1.5), multiplied on top of the sim-driven
+  // levels. Set from the Audio panel via setMix(); default 1 = unchanged.
+  const THUNDER_BASE = 0.8;
+  const mix = { rain: 1, wind: 1, thunder: 1, ambient: 1 };
 
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
   function running() { return enabled && ctx && ctx.state === 'running'; }
@@ -165,7 +169,7 @@ window.StormAudio = (function () {
 
     rainGain = ctx.createGain(); rainGain.gain.value = 0; rainGain.connect(comp);
     windGain = ctx.createGain(); windGain.gain.value = 0; windGain.connect(comp);
-    thunderGain = ctx.createGain(); thunderGain.gain.value = 0.8; thunderGain.connect(comp);
+    thunderGain = ctx.createGain(); thunderGain.gain.value = THUNDER_BASE * mix.thunder; thunderGain.connect(comp);
     ambientGain = ctx.createGain(); ambientGain.gain.value = 0; ambientGain.connect(comp);
 
     // Rain bed: pink noise loop through a lowpass whose cutoff tracks rain
@@ -557,6 +561,19 @@ window.StormAudio = (function () {
     if (master && ctx) master.gain.setTargetAtTime(v, ctx.currentTime, 0.05);
   }
 
+  // Per-sound mixer trims from the Audio panel. Rain/wind/ambient beds pick
+  // up the new value on the next update() frame; thunder is a fixed bus, so
+  // apply its trim immediately.
+  function setMix(m) {
+    if (m.rain != null) mix.rain = m.rain;
+    if (m.wind != null) mix.wind = m.wind;
+    if (m.thunder != null) mix.thunder = m.thunder;
+    if (m.ambient != null) mix.ambient = m.ambient;
+    if (thunderGain && ctx) {
+      thunderGain.gain.setTargetAtTime(THUNDER_BASE * mix.thunder, ctx.currentTime, 0.05);
+    }
+  }
+
   // Per-frame bed levels from the sim (values 0..~1, smoothed here):
   // rain → rainVolume + lowpass cutoff (and drop density), wind →
   // windVolume + gust-LFO rate/depth (turbulence), ambient → presence bed.
@@ -568,16 +585,16 @@ window.StormAudio = (function () {
     const amb = clamp(l.ambient || 0, 0, 1);
     levels.rain = rain; levels.wind = wind; levels.ambient = amb;
 
-    rainGain.gain.setTargetAtTime(rain * 0.55, t, 0.35);
+    rainGain.gain.setTargetAtTime(rain * 0.55 * mix.rain, t, 0.35);
     rainFilter.frequency.setTargetAtTime(700 + rain * 2800, t, 0.5);
 
-    windGain.gain.setTargetAtTime(0.03 + wind * 0.45, t, 0.35);
+    windGain.gain.setTargetAtTime((0.03 + wind * 0.45) * mix.wind, t, 0.35);
     windLfo1.frequency.setTargetAtTime(0.02 + wind * 0.08, t, 1.0);
     windLfo2.frequency.setTargetAtTime(0.10 + wind * 0.25, t, 1.0);
     windLfo1Gain.gain.setTargetAtTime(100 + wind * 250, t, 1.0);
     windLfo2Gain.gain.setTargetAtTime(40 + wind * 120, t, 1.0);
 
-    ambientGain.gain.setTargetAtTime(amb * 0.35, t, 0.35);
+    ambientGain.gain.setTargetAtTime(amb * 0.35 * mix.ambient, t, 0.35);
   }
 
   // One thunder event per sim lightning strike. distance arrives in sim
@@ -610,7 +627,7 @@ window.StormAudio = (function () {
   }
 
   return {
-    enable, disable, setMaster, update, thunder,
+    enable, disable, setMaster, setMix, update, thunder,
     suspendForHidden() {
       stopDrops();
       cancelOneShots();
