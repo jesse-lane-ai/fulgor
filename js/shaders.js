@@ -139,7 +139,15 @@ float shapeField(vec3 p) {
 float cloudDensity(vec3 p, bool detail) {
   float d = 0.0;
   float s = shapeField(p);
-  if (s > 0.01) {
+  // Wall cloud: a lowered base hanging under the rear of the main updraft.
+  // Folded into the same density field as the storm (it boosts the shape and
+  // shares the storm's noise) so it always stays attached to the base above.
+  float wallM = 0.0;
+  if (uWall.w > 0.0 && p.y > 0.40 && p.y < CLOUD_BASE + 0.7) {
+    float rw = length(p.xz - uWall.xy) / uWall.z;
+    if (rw < 1.0) wallM = (1.0 - rw) * smoothstep(0.40, 0.60, p.y) * uWall.w;
+  }
+  if (s > 0.01 || wallM > 0.005) {
     vec3 q = p * 0.30 + uSeedOffset;
     q.x += uTime * 0.012 * uWindSpeed;
     q.z += uTime * 0.004 * uWindSpeed;
@@ -152,10 +160,10 @@ float cloudDensity(vec3 p, bool detail) {
     float hh = clamp((p.y - CLOUD_BASE) / 8.0, 0.0, 1.0);
     n = mix(n, 0.78, smoothstep(0.62, 0.95, hh));
     float thr = 0.85 - 0.30 * uCoverage;
-    d = clamp((s - thr * (1.0 - n)) * 2.6, 0.0, 1.0);
+    d = clamp((max(s, 0.0) + wallM * 0.9 - thr * (1.0 - n)) * 2.6, 0.0, 1.0);
     if (detail && d > 0.0 && d < 0.9) {
       float e = fbm3(q * 4.1 + vec3(uTime * 0.01, 0.0, 0.0));
-      d = clamp(d - (1.0 - e) * (1.0 - d) * 0.55, 0.0, 1.0);
+      d = clamp(d - (1.0 - e) * (1.0 - d) * 0.55 * (1.0 - wallM), 0.0, 1.0);
     }
     d *= uDensityMul;
   }
@@ -169,15 +177,6 @@ float cloudDensity(vec3 p, bool detail) {
       float vprof = smoothstep(1.1, 1.45, p.y) * (1.0 - smoothstep(1.9, 2.5, p.y));
       float thr = 1.02 - uMidClouds * 0.38;
       d += clamp((nm - thr) * 3.0, 0.0, 1.0) * vprof * zfade * uDensityMul * 0.6;
-    }
-  }
-  // Wall cloud: a lowered, rain-free base under the rear of the main updraft.
-  if (uWall.w > 0.0 && p.y < CLOUD_BASE + 0.15 && p.y > 0.40) {
-    float rw = length(p.xz - uWall.xy) / uWall.z;
-    if (rw < 1.0) {
-      float vfw = smoothstep(0.42, 0.62, p.y);
-      float nw = vnoise(vec3(p.x * 1.6, p.y * 2.2 - uTime * 0.015, p.z * 1.6) + uSeedOffset);
-      d += clamp((1.0 - rw) * vfw * (0.45 + 0.55 * nw) * 1.4, 0.0, 1.0) * uWall.w * uDensityMul;
     }
   }
   // Rain shaft / virga under the storm core.
