@@ -402,7 +402,7 @@ vec3 skyColor(vec3 rd) {
   if (uMoonPhase >= 0.0) {
     float md = dot(rd, uMoonDir);
     // Angular radius of the disc (~a bit larger than real, for presence).
-    const float MR = 0.986;            // cos of the disc's angular radius
+    const float MR = 0.999;            // cos of the disc's angular radius (~5° wide)
     if (md > MR - 0.02) {
       // Build a disc-local frame: mu/mv span the plane facing the viewer.
       vec3 mu = normalize(cross(uMoonDir, vec3(0.0, 1.0, 0.0)) + vec3(1e-4));
@@ -423,17 +423,20 @@ vec3 skyColor(vec3 rd) {
         // sweeps the terminator across the disc as the phase (sun-moon
         // geometry) changes, giving the correct curved crescent/gibbous.
         float lit = clamp(dot(n, uMoonLightDir) * 0.5 + 0.5, 0.0, 1.0);
-        lit = smoothstep(0.46, 0.54, lit);
+        lit = smoothstep(0.44, 0.58, lit);       // soft, curved terminator
         // Subtle maria mottling + limb darkening on the lit face.
         float maria = 0.82 + 0.18 * vnoise(n * 6.0 + uSeedOffset);
         float limb = mix(1.0, 0.72, smoothstep(0.55, 1.0, rr));
-        vec3 face = uMoonColor * (0.05 + 0.95 * lit) * maria * limb;
+        vec3 face = uMoonColor * maria * limb;
         // Soft anti-aliased disc edge.
         float disc = 1.0 - smoothstep(0.985, 1.02, rr);
-        // Earthshine: the dark limb stays faintly visible near full-ish phase.
-        float earth = (1.0 - lit) * (1.0 - abs(uMoonPhase - 0.5) * 2.0) * 0.05;
-        face += uMoonColor * earth;
-        col = mix(col, face, disc);
+        // The moon only paints where it's lit — the shadowed limb is left
+        // transparent so the sky shows through and it reads as practically
+        // invisible. A whisper of earthshine near full keeps the dark limb
+        // from cutting hard rather than rendering a visible dark disc.
+        float earth = (1.0 - lit) * (1.0 - abs(uMoonPhase - 0.5) * 2.0) * 0.03;
+        float alpha = disc * clamp(lit + earth, 0.0, 1.0);
+        col = mix(col, face, alpha);
         // Faint corona / halo bleeding just outside the disc.
         float corona = exp(-(rr - 1.0) * 9.0) * (1.0 - disc) * 0.10;
         col += uMoonColor * corona * (0.4 + 0.6 * (1.0 - abs(uMoonPhase - 0.5) * 2.0));
