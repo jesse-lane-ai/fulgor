@@ -187,65 +187,87 @@ window.StormAudio = (function () {
     pan.connect(conv); conv.connect(wet); wet.connect(comp);
 
     const nodes = [out, pan, dry, wet, conv];
-    let tEnd = t0;
 
-    // Crack: the sharp tearing snap of the channel. CG bolts always get a
-    // distinct crack — distance dulls it (highpass cutoff, dry/wet mix)
-    // rather than erasing it, so even a far bolt still snaps before rolling.
-    const crackAmp = (opts.isCG ? 1.15 : 0.45) * (0.3 + 0.7 * near) * energy;
-    if (crackAmp > 0.02) {
-      const mkCrack = (at, amp, dur) => {
-        const src = ctx.createBufferSource(); src.buffer = noiseBuf;
-        const hp = ctx.createBiquadFilter();
-        hp.type = 'highpass'; hp.frequency.value = 1100 + 2400 * near;
-        const g = ctx.createGain();
-        g.gain.setValueAtTime(0, at);
-        g.gain.linearRampToValueAtTime(amp, at + 0.005);
-        g.gain.exponentialRampToValueAtTime(0.001, at + dur);
-        src.connect(hp); hp.connect(g); g.connect(out);
-        src.start(at, Math.random() * 2, dur + 0.1);
-        nodes.push(src, hp, g);
-      };
-      mkCrack(t0, crackAmp, 0.13 + 0.12 * near);
-      // Ragged double-snap on ground strikes.
-      if (opts.isCG) mkCrack(t0 + 0.05 + Math.random() * 0.08, crackAmp * 0.5, 0.09);
-      tEnd = Math.max(tEnd, t0 + 0.5);
-    }
-
-    // Rumble: long multi-lobe low body; farther = duller, longer, softer.
-    {
-      const dur = 1.4 + 2.2 * (1 - near) + Math.random() * 1.2;
+    // Generic rumble body: looping noise through a falling lowpass, with a
+    // first peak followed by randomized sub-lobes. All three thunder
+    // characters are parameterizations of this.
+    const mkRumble = (p) => {
       const src = ctx.createBufferSource();
       src.buffer = noiseBuf; src.loop = true;
-      src.playbackRate.value = 0.55 + Math.random() * 0.2;
+      src.playbackRate.value = p.rate * (0.9 + Math.random() * 0.2);
       const lp = ctx.createBiquadFilter();
       lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(90 + 340 * near, t0);
-      lp.frequency.exponentialRampToValueAtTime(45, t0 + dur);
+      lp.frequency.setValueAtTime(p.f0, t0);
+      lp.frequency.exponentialRampToValueAtTime(p.f1, t0 + p.dur);
       const g = ctx.createGain();
-      const amp = (0.5 + 0.5 * near) * energy * 1.0;
       g.gain.setValueAtTime(0, t0);
-      // Random sub-peaks give the rolling, tumbling character.
-      const nLobes = 2 + Math.floor(Math.random() * 3);
-      let tt = t0 + 0.02 + (1 - near) * 0.15;
-      for (let i = 0; i < nLobes; i++) {
-        const peak = amp * (i === 0 ? 1 : 0.4 + Math.random() * 0.5);
-        g.gain.linearRampToValueAtTime(peak, tt + 0.09 + Math.random() * 0.15);
-        tt += (dur / nLobes) * (0.7 + Math.random() * 0.6);
-        g.gain.linearRampToValueAtTime(peak * 0.25, tt);
+      let tt = t0 + p.lead;
+      g.gain.linearRampToValueAtTime(p.amp, tt + p.att);
+      tt += p.att;
+      for (let i = 0; i < p.lobes; i++) {
+        tt += (p.dur / (p.lobes + 1)) * (0.7 + Math.random() * 0.6);
+        g.gain.linearRampToValueAtTime(p.amp * (0.25 + Math.random() * 0.2), tt);
+        const peak = p.amp * (0.4 + Math.random() * 0.5);
+        tt += 0.12 + Math.random() * 0.25;
+        g.gain.linearRampToValueAtTime(peak, tt);
       }
-      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur + 0.6);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + p.dur + 0.6);
       src.connect(lp); lp.connect(g); g.connect(out);
       src.start(t0, Math.random() * 2);
-      src.stop(t0 + dur + 0.8);
+      src.stop(t0 + p.dur + 0.8);
       nodes.push(src, lp, g);
-      tEnd = Math.max(tEnd, t0 + dur + 0.8);
-      // Teardown once the reverb tail is done too.
-      src.onended = () => {
-        setTimeout(() => nodes.forEach(n => { try { n.disconnect(); } catch (e) {} }),
-                   4000);
-      };
+      return src;
+    };
+
+    // Pick a thunder character: close/CG strikes favor the cannon boom,
+    // far ones the long horizon roll, with the tumbling roll as the default.
+    // Every parameter is randomized in a range so no two claps match.
+    const roll = Math.random();
+    let kind = 'roll';
+    if (roll < near * (opts.isCG ? 0.65 : 0.30)) kind = 'boom';
+    else if (roll > 1 - (1 - near) * 0.45) kind = 'longroll';
+
+    let main;
+    if (kind === 'boom') {
+      // Cannon boom: one huge fast peak, quick decay, plus a sub-bass drop.
+      main = mkRumble({
+        dur: 1.2 + Math.random() * 0.7, rate: 0.55,
+        f0: 150 + 160 * near, f1: 50,
+        amp: (0.9 + 0.5 * near) * energy, att: 0.04 + Math.random() * 0.03,
+        lead: 0, lobes: Math.random() < 0.5 ? 1 : 0,
+      });
+      const o = ctx.createOscillator(); o.type = 'sine';
+      o.frequency.setValueAtTime(55 + Math.random() * 14, t0);
+      o.frequency.exponentialRampToValueAtTime(34, t0 + 0.5);
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(0.6 * energy * near, t0 + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+      o.connect(g); g.connect(out);
+      o.start(t0); o.stop(t0 + 0.6);
+      nodes.push(o, g);
+    } else if (kind === 'longroll') {
+      // Long horizon roll: dull, slow, many soft lobes.
+      main = mkRumble({
+        dur: 3.8 + Math.random() * 2.4, rate: 0.5,
+        f0: 110 + 60 * near, f1: 38,
+        amp: (0.4 + 0.35 * near) * energy, att: 0.3 + Math.random() * 0.25,
+        lead: 0.1 + Math.random() * 0.2, lobes: 4 + Math.floor(Math.random() * 3),
+      });
+    } else {
+      // Tumbling roll: the classic mid-distance multi-lobe rumble.
+      main = mkRumble({
+        dur: 1.6 + 2.0 * (1 - near) + Math.random() * 1.2, rate: 0.6,
+        f0: 90 + 340 * near, f1: 45,
+        amp: (0.5 + 0.5 * near) * energy, att: 0.09 + Math.random() * 0.15,
+        lead: 0.02 + (1 - near) * 0.15, lobes: 2 + Math.floor(Math.random() * 3),
+      });
     }
+    // Teardown once the reverb tail is done too.
+    main.onended = () => {
+      setTimeout(() => nodes.forEach(n => { try { n.disconnect(); } catch (e) {} }),
+                 4000);
+    };
   }
 
   return {

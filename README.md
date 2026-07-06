@@ -52,10 +52,12 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
 - **Audio** — a 🔊 Sound toggle and volume. Fully procedural (no audio files):
   rain hiss tracks the precipitation core (and your distance to it), wind
   tracks the Wind slider, a low rumble carries the storm's presence, and each
-  lightning event answers with synthesized thunder — closer bolts crack sooner
-  and sharper, distant ones arrive later as a dull reverberant roll, panned to
-  where the flash happened. The whole bed follows the lifecycle stage: a
-  cumulus or dissipated storm is quiet.
+  lightning event answers with synthesized thunder in one of three randomized
+  characters — a cannon boom (favored by close ground strikes), a tumbling
+  multi-lobe roll, or a long dull horizon roll (favored by distant flashes) —
+  arriving sooner and punchier up close, later and more reverberant far away,
+  panned to where the flash happened. The whole bed follows the lifecycle
+  stage: a cumulus or dissipated storm is quiet.
 - **Render** — quality (raymarch step counts) and resolution scale.
 
 URL overrides: `?quality=minimal|low|medium|high|ultra&scale=0.5` (used for
@@ -88,10 +90,12 @@ weak/software GPUs, which are also auto-detected).
 - `js/audio.js` — procedural Web Audio sound engine, no assets: looping
   filtered-noise beds (rain hiss + body, gusting two-layer wind, deep ambient
   rumble) smoothed each frame from sim state, plus per-strike thunder
-  one-shots (bright crack + multi-lobe low rumble through a generated
-  decaying-noise convolver) with compressed distance-aware delay, muffling and
-  stereo pan. Everything runs through a soft compressor; the context starts on
-  the Sound toggle (autoplay policy) and suspends while the tab is hidden.
+  one-shots — three randomized rumble characters (cannon boom with a sub-bass
+  drop, tumbling roll, long horizon roll) picked by distance and strike type,
+  through a generated decaying-noise convolver with compressed distance-aware
+  delay, muffling and stereo pan. Everything runs through a soft compressor;
+  the context starts on the Sound toggle (autoplay policy) and suspends while
+  the tab is hidden.
 
 Debug hook: `window.__ts` exposes `params`, `camera`, `lightning`
 (`lightning.force = 'cg' | 'ic'; lightning.next = 0` forces a strike),
