@@ -429,7 +429,7 @@
     const radH = Math.hypot(off[0], off[2]);
     const r = Math.hypot(radH, off[1]);
     let ang = Math.atan2(off[0], off[2]) - dx * 0.003;
-    let el = Math.min(1.2, Math.max(-0.05, Math.atan2(off[1], radH) + dy * 0.003));
+    let el = Math.min(1.2, Math.max(-0.05, Math.atan2(off[1], radH) - dy * 0.003));
     const nradH = r * Math.cos(el);
     camera.pos = [
       t[0] + Math.sin(ang) * nradH,
@@ -454,7 +454,7 @@
       orbitDrag(dx, dy);
     } else {
       camera.yaw += dx * 0.0028;
-      camera.pitch = Math.min(1.45, Math.max(-1.45, camera.pitch + dy * 0.0028));
+      camera.pitch = Math.min(1.45, Math.max(-1.45, camera.pitch - dy * 0.0028));
     }
     lastX = e.clientX; lastY = e.clientY;
   });
