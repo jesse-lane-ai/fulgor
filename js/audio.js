@@ -125,14 +125,14 @@ window.StormAudio = (function () {
   }
 
   // Equal-power panner used by all thunder layers. Listener stays at the origin
-  // facing -z; positions are in meters. refDistance 1500 = full volume at
-  // 1.5 km or closer, inverse rolloff beyond.
+  // facing -z; positions are in meters (an acoustic-compressed distance, see
+  // thunder()). refDistance 3000 = full volume within 3 km, inverse beyond.
   function makePanner(px, py, pz, t) {
     const p = ctx.createPanner();
     p.panningModel = SPATIAL_MODE;
     p.distanceModel = 'inverse';
-    p.refDistance = 1500;
-    p.rolloffFactor = 1.0;
+    p.refDistance = 3000; // full volume within 3 km, inverse rolloff beyond —
+    p.rolloffFactor = 1.0; // keeps a distant storm present without muting it
     if (p.positionX && typeof p.positionX.setValueAtTime === 'function') {
       p.positionX.setValueAtTime(px, t);
       p.positionY.setValueAtTime(py, t);
@@ -604,15 +604,24 @@ window.StormAudio = (function () {
   // flash→clap delay so fast-forward keeps flash and clap in sync.
   function thunder(opts) {
     if (!running()) return;
-    const distKm = clamp(opts.distance || 1, 0.2, 14);
-    const dist = clamp(distKm * 1000, 200, 12000);
+    // The sim's storm sits at a genuine ~14 km. In the ported engine's native
+    // scale that lands in the "distant, rumble-only" bucket — the crack needs
+    // < 6 km and the tearing peal < 9.5 km, so the audible thunder vanished
+    // and only a faint sub-bass rumble survived (further attenuated ~8x by the
+    // panner's inverse distance model). Compress the real distance into an
+    // acoustic band so a typical storm reads as an audible "medium" strike
+    // (crack + tear + rumble), flying close stays punchy, and truly far still
+    // dulls out. realKm still drives the flash->boom delay for the drama.
+    const realKm = clamp(opts.distance || 1, 0.2, 40);
+    const acKm = 0.5 + 5.0 * (1 - Math.exp(-realKm / 7)); // saturates ~5.5 km
+    const dist = clamp(acKm * 1000, 200, 9000);
     const energy = clamp(opts.energy == null ? 1 : opts.energy, 0.3, 2.5);
     const intensity = clamp(0.25 + energy * 0.3, 0.1, 1.0);
     const isCG = !!opts.isCG;
     const pan = clamp(opts.pan || 0, -1, 1);
-    // Compressed distance delay kept from the sim — physical 343 m/s would
-    // answer a 12 km flash 35 s later.
-    const delay = (0.2 + 2.8 * (1 - Math.exp(-distKm / 12)) * (0.9 + Math.random() * 0.2)) /
+    // Physical 343 m/s would answer a 14 km flash ~35 s later; keep a
+    // compressed but real-distance-driven gap so flash and boom feel linked.
+    const delay = (0.2 + 2.8 * (1 - Math.exp(-realKm / 12)) * (0.9 + Math.random() * 0.2)) /
                   Math.max(opts.speed || 1, 0.5);
 
     // Position: pan → azimuth in front of the listener (origin, facing -z);
