@@ -486,9 +486,11 @@
     if (!keys.size) return;
     const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 12 : 3) * dt;
     const sy = Math.sin(camera.yaw), cy = Math.cos(camera.yaw);
+    const cp = Math.cos(camera.pitch), sp = Math.sin(camera.pitch);
     let mx = 0, my = 0, mz = 0;
-    if (keys.has('KeyW')) { mx += sy; mz -= cy; }
-    if (keys.has('KeyS')) { mx -= sy; mz += cy; }
+    // W/S fly along the full view direction (including pitch); A/D strafe flat.
+    if (keys.has('KeyW')) { mx += sy * cp; my += sp; mz -= cy * cp; }
+    if (keys.has('KeyS')) { mx -= sy * cp; my -= sp; mz += cy * cp; }
     if (keys.has('KeyA')) { mx -= cy; mz -= sy; }
     if (keys.has('KeyD')) { mx += cy; mz += sy; }
     if (keys.has('Space')) my += 1;
