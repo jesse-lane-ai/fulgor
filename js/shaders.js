@@ -122,9 +122,12 @@ float shapeField(vec3 p) {
       float w = widthProfile(hn, tallness);
       // The disc anvil gets an extra push downwind, short on the back-sheared side.
       float sa = smoothstep(0.68, 0.92, hn) * tallness;
+      // Forward-flank shelf: the base also stretches downwind so the cloud
+      // roofs the precipitation core instead of leaving it detached.
+      float sb = (1.0 - smoothstep(0.10, 0.45, hn)) * tallness;
       float u = dot(off, uShear.xy);
       float v = -off.x * uShear.y + off.y * uShear.x;
-      float elong = 1.0 + (u > 0.0 ? 0.7 : 0.2) * sa * uShear.z * 0.22;
+      float elong = 1.0 + (u > 0.0 ? 0.7 * sa + 0.72 * sb : 0.2 * sa) * uShear.z * 0.22;
       float r = length(vec2(u / elong, v)) / (tw.z * w);
       // Undulate the anvil rim: without this the disc edge is a perfect cone
       // and reads as a razor-straight CG line from below.
