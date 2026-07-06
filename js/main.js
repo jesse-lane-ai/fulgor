@@ -56,7 +56,7 @@
 
   // ---------- Parameters (bound to UI) ----------
   const params = {
-    speed: 1.0, wind: 1.0, seed: 1234,
+    speed: 1.0, wind: 1.0, motion: 1.0, seed: 1234,
     density: 1.0, coverage: 1.0, size: 1.0,
     freq: 1.0, intensity: 1.0, duration: 1.0,
     boltColor: '#eee9ff', flashColor: '#d7c9ff',
@@ -105,6 +105,7 @@
 
   const camera = { pos: [0, 0.0025, 0], yaw: 0, pitch: 0.10, fovTan: 0.55, lock: false };
   let storm = null;
+  const stormOffset = [0, 0]; // accumulated travel along the storm track
 
   // Supercell layout (see reference/anatomy-of-supercell.jpg): a main updraft
   // whose anvil shears downwind, a flanking line of shorter towers stepping
@@ -152,15 +153,21 @@
     }
 
     const rainDist = 2.0 + rand() * 1.5;
+    // Storm track: roughly downwind, deviated like a right-moving supercell.
+    const dev = (rand() - 0.5) * 0.9;
+    const cd = Math.cos(dev), sdv = Math.sin(dev);
     storm = {
       towers,
       shearDir: [sdx, sdz],
       shear,
+      moveDir: [sdx * cd - sdz * sdv, sdx * sdv + sdz * cd],
+      meanderPhase: rand() * Math.PI * 2,
       seedOffset: [rand() * 97, rand() * 97, rand() * 97],
       rain: [cx + sdx * rainDist, cz + sdz * rainDist, mainR * 0.95, 0.7 + rand() * 0.5],
       wall: [cx - sdx * (0.8 + rand() * 0.6), cz - sdz * (0.8 + rand() * 0.6),
              0.8 + rand() * 0.5, 0.7 + rand() * 0.5],
     };
+    stormOffset[0] = 0; stormOffset[1] = 0;
     // Reset the camera to ground level, aimed at the main cell.
     camera.pos = [0, 0.0025, 0];
     camera.yaw = Math.atan2(towers[0].x, -towers[0].z);
@@ -185,8 +192,8 @@
       // Slow convective growth cycles so cells visibly build and decay.
       // The main updraft stays steadier so the anvil doesn't bob around.
       const amp = i === 0 ? 0.06 : 0.14;
-      const x = cx + (t.x - cx) * s;
-      const z = cz + (t.z - cz) * s;
+      const x = cx + (t.x - cx) * s + stormOffset[0];
+      const z = cz + (t.z - cz) * s + stormOffset[1];
       const r = t.r * s * (0.94 + 0.06 * Math.sin(simT * 0.021 + t.phase * 1.7));
       const top = Math.min(CLOUD_BASE + (t.top - CLOUD_BASE) * sh, 13.5) *
                   (1.0 - amp + amp * Math.sin(simT * 0.03 + t.phase));
@@ -208,9 +215,11 @@
     if (sdz > 0) mxz += sdz * reach; else mnz += sdz * reach;
     live.boundsMin = [mnx, 0.0, mnz];
     live.boundsMax = [mxx, mxy + 1.3, mxz];
-    live.rain = [cx + (storm.rain[0] - cx) * s, cz + (storm.rain[1] - cz) * s,
+    live.rain = [cx + (storm.rain[0] - cx) * s + stormOffset[0],
+                 cz + (storm.rain[1] - cz) * s + stormOffset[1],
                  storm.rain[2] * s, storm.rain[3]];
-    live.wall = [cx + (storm.wall[0] - cx) * s, cz + (storm.wall[1] - cz) * s,
+    live.wall = [cx + (storm.wall[0] - cx) * s + stormOffset[0],
+                 cz + (storm.wall[1] - cz) * s + stormOffset[1],
                  storm.wall[2] * s, storm.wall[3]];
   }
 
@@ -444,6 +453,7 @@
   }
   bindRange('speed', v => v.toFixed(2) + '×');
   bindRange('wind');
+  bindRange('motion', v => v.toFixed(2) + '×');
   bindRange('density');
   bindRange('coverage');
   bindRange('size', v => v.toFixed(2) + '×');
@@ -511,6 +521,7 @@
     set('coverage', (0.6 + R() * 0.9).toFixed(2));
     set('size', (0.6 + R() * 1.2).toFixed(2));
     set('wind', (R() * 2.5).toFixed(2));
+    set('motion', (0.3 + R() * 1.7).toFixed(2));
     set('freq', (0.3 + R() * 2.7).toFixed(2));
     set('intensity', (0.5 + R() * 1.5).toFixed(2));
     set('duration', (0.4 + R() * 1.8).toFixed(2));
@@ -578,6 +589,17 @@
       const azInput = document.getElementById('sunAz');
       azInput.value = az;
       document.getElementById('v-sunAz').textContent = az.toFixed(0) + '°';
+    }
+
+    // Advance the storm along its track (gently meandering downwind).
+    if (params.motion > 0.001) {
+      const wob = Math.sin(simT * 0.004 + storm.meanderPhase) * 0.5;
+      const cw = Math.cos(wob), sw = Math.sin(wob);
+      const dirX = storm.moveDir[0] * cw - storm.moveDir[1] * sw;
+      const dirZ = storm.moveDir[0] * sw + storm.moveDir[1] * cw;
+      const step = 0.012 * params.motion * dt * params.speed; // ~43 km/h at 1×/1×
+      stormOffset[0] += dirX * step;
+      stormOffset[1] += dirZ * step;
     }
 
     updateTowers(simT);
@@ -679,5 +701,5 @@
   scheduleNext();
 
   // Debug/automation hook.
-  window.__ts = { params, camera, lightning, renderOnce: frame, reseed };
+  window.__ts = { params, camera, lightning, live, renderOnce: frame, reseed };
 })();

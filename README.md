@@ -23,8 +23,11 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
 - **Lock on storm** (Camera panel) — the view stays aimed at the main updraft;
   dragging orbits around the storm, and flying keeps it centered. "Reset
   camera" returns to the ground-level view.
-- **Simulation** — speed (0 pauses), wind, seed + 🎲 New storm (regenerates the
-  cell layout and noise field, re-aims the camera).
+- **Simulation** — speed (0 pauses), wind, storm motion (the storm travels a
+  gently meandering track roughly downwind, ~43 km/h at 1×; 0 parks it), seed +
+  🎲 New storm (regenerates the cell layout and noise field, re-aims the
+  camera). Rain core, wall cloud, lightning and the camera lock all follow the
+  moving storm — lock mode is a storm chase.
 - **⚡ Randomize everything** — rerolls all colors, storm structure, sky layers,
   sun position and weather settings (leaves speed and render settings alone).
 - **Clouds** — storm size (0.5×–2×, scales the whole cell live; height scales
