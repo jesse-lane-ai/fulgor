@@ -45,7 +45,7 @@ window.StormAudio = (function () {
   const levels = { rain: 0, wind: 0, ambient: 0 };
   // Per-sound user mixer trims (0..~1.5), multiplied on top of the sim-driven
   // levels. Set from the Audio panel via setMix(); default 1 = unchanged.
-  const THUNDER_BASE = 0.8;
+  const THUNDER_BASE = 1.2;
   const mix = { rain: 1, wind: 1, thunder: 1, ambient: 1 };
 
   const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
@@ -585,7 +585,7 @@ window.StormAudio = (function () {
     const amb = clamp(l.ambient || 0, 0, 1);
     levels.rain = rain; levels.wind = wind; levels.ambient = amb;
 
-    rainGain.gain.setTargetAtTime(rain * 0.55 * mix.rain, t, 0.35);
+    rainGain.gain.setTargetAtTime(rain * 0.35 * mix.rain, t, 0.35);
     rainFilter.frequency.setTargetAtTime(700 + rain * 2800, t, 0.5);
 
     windGain.gain.setTargetAtTime((0.03 + wind * 0.45) * mix.wind, t, 0.35);
