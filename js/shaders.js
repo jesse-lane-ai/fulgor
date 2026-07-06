@@ -135,6 +135,17 @@ float shapeField(vec3 p) {
         float wob = vnoise(vec3(p.x * 0.22, p.y * 0.35, p.z * 0.22) + uSeedOffset);
         r *= 1.0 + (wob - 0.5) * 0.5 * sa;
       }
+      // Stacked laminar ledges around the lower barrel — the "stack of
+      // plates" of the rotating mesocyclone: terraced rims of irregular
+      // spacing and thickness, gently twisted around the axis.
+      if (i == 0 && hn < 0.75 && tallness > 0.5) {
+        float ang = atan(v, u);
+        float ph = vnoise(vec3(2.7, p.y * 0.9, 5.3) + uSeedOffset) * 6.0;
+        float ledge = sin(p.y * 6.5 + ph + ang * 0.7) * 0.6
+                    + sin(p.y * 2.6 + ph * 0.5 - ang * 0.5) * 0.4;
+        float lm = smoothstep(0.02, 0.12, hn) * (1.0 - smoothstep(0.50, 0.75, hn));
+        r *= 1.0 - ledge * 0.15 * lm;
+      }
       float vf = smoothstep(-0.04, 0.10, hn) * (1.0 - smoothstep(0.84, 1.03, hn));
       best = smax(best, (1.0 - r) * vf, 0.25);
     }
@@ -189,7 +200,7 @@ float cloudDensity(vec3 p, bool detail) {
       vec2 rel = p.xz - mt.xy;
       float rr = length(rel) / max(mt.z, 0.001);
       if (rr < 1.5) {
-        float band = sin(p.y * 4.5 + atan(rel.y, rel.x) * 1.5 + n * 2.0 - uTime * 0.05);
+        float band = sin(p.y * 6.5 + atan(rel.y, rel.x) * 0.7 + n * 2.0 - uTime * 0.05);
         float bm = smoothstep(0.03, 0.18, hb) * (1.0 - smoothstep(0.42, 0.62, hb))
                  * (1.0 - smoothstep(0.90, 1.50, rr));
         n += band * 0.07 * bm;
