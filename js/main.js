@@ -42,7 +42,7 @@
 
   const U = {};
   ['uResolution', 'uTime', 'uLook', 'uFovTan', 'uCamPos', 'uSeedOffset', 'uWindSpeed',
-   'uNumTowers', 'uBoundsMin', 'uBoundsMax', 'uRain', 'uShear', 'uWall',
+   'uNumTowers', 'uBoundsMin', 'uBoundsMax', 'uRain', 'uShear', 'uWall', 'uDecay',
    'uDensityMul', 'uCoverage',
    'uSteps', 'uLightSteps', 'uExposure', 'uHighDetail', 'uFlashAmb', 'uAmbColor',
    'uSunColor', 'uSunDir', 'uBgClouds', 'uCirrus', 'uMidClouds',
@@ -57,6 +57,7 @@
   // ---------- Parameters (bound to UI) ----------
   const params = {
     speed: 1.0, wind: 1.0, motion: 1.0, seed: 1234,
+    stage: 0.5, lifecycle: false,
     density: 1.0, coverage: 1.0, size: 1.0,
     freq: 1.0, intensity: 1.0, duration: 1.0,
     boltColor: '#eee9ff', flashColor: '#d7c9ff',
@@ -176,10 +177,35 @@
   // The storm as rendered this frame: base layout scaled by the Size slider
   // (about the main updraft) with the convective growth cycles applied.
   const live = { towers: [], rain: [0, 0, 0, 0], wall: [0, 0, 0, 0],
-                 boundsMin: [0, 0, 0], boundsMax: [0, 0, 0], shearZ: 0 };
+                 boundsMin: [0, 0, 0], boundsMax: [0, 0, 0], shearZ: 0,
+                 stageFx: { grow: 1, rain: 1, wall: 1, ltg: 1, decay: 0 } };
   const towerData = new Float32Array(32);
+  const sstep = (a, b, x) => {
+    x = Math.min(Math.max((x - a) / (b - a), 0), 1);
+    return x * x * (3 - 2 * x);
+  };
+  // Lifecycle stage factors, from the three-stage diagram in
+  // reference/Stages_of_a_Thunderstorm_Diagram_Explainer.webp:
+  //   ~0.0  cumulus stage — short towers, updraft only: no anvil (towers stay
+  //         below the tropopause), no rain, no wall cloud, no lightning;
+  //   ~0.5  mature stage — every factor at full strength (the classic look);
+  //   ~1.0  dissipating stage — downdraft only: rain tapers off, the column
+  //         erodes to wisps (uDecay) and the anvil remnant fades last.
+  // At stage 0.5 all factors are exactly 1/0, so the default view is the
+  // same mature supercell as before this control existed.
+  function stageFactors(g) {
+    return {
+      grow: 0.30 + 0.70 * sstep(0.02, 0.45, g),
+      rain: sstep(0.30, 0.50, g) * (1 - sstep(0.62, 0.95, g)),
+      wall: sstep(0.30, 0.48, g) * (1 - sstep(0.60, 0.85, g)),
+      ltg:  sstep(0.26, 0.45, g) * (1 - sstep(0.60, 0.95, g)),
+      decay: sstep(0.55, 1.00, g),
+    };
+  }
   function updateTowers(simT) {
     const s = params.size;
+    const fx = stageFactors(params.stage);
+    live.stageFx = fx;
     // Wider storms get only somewhat taller — tops cap at the tropopause.
     const sh = Math.min(1 + (s - 1) * 0.35, 1.35);
     const cx = storm.towers[0].x, cz = storm.towers[0].z;
@@ -192,8 +218,9 @@
       const amp = i === 0 ? 0.06 : 0.14;
       const x = cx + (t.x - cx) * s + stormOffset[0];
       const z = cz + (t.z - cz) * s + stormOffset[1];
-      const r = t.r * s * (0.94 + 0.06 * Math.sin(simT * 0.021 + t.phase * 1.7));
-      const top = Math.min(CLOUD_BASE + (t.top - CLOUD_BASE) * sh, 13.5) *
+      const r = t.r * s * (0.82 + 0.18 * fx.grow) *
+                (0.94 + 0.06 * Math.sin(simT * 0.021 + t.phase * 1.7));
+      const top = Math.min(CLOUD_BASE + (t.top - CLOUD_BASE) * sh * fx.grow, 13.5) *
                   (1.0 - amp + amp * Math.sin(simT * 0.03 + t.phase));
       towerData[i * 4 + 0] = x;
       towerData[i * 4 + 1] = z;
@@ -217,10 +244,10 @@
     live.boundsMax = [mxx, mxy + 1.3, mxz];
     live.rain = [cx + (storm.rain[0] - cx) * s + stormOffset[0],
                  cz + (storm.rain[1] - cz) * s + stormOffset[1],
-                 storm.rain[2] * s, storm.rain[3]];
+                 storm.rain[2] * s, storm.rain[3] * fx.rain];
     live.wall = [cx + (storm.wall[0] - cx) * s + stormOffset[0],
                  cz + (storm.wall[1] - cz) * s + stormOffset[1],
-                 storm.wall[2] * s, storm.wall[3]];
+                 storm.wall[2] * s, storm.wall[3] * fx.wall];
   }
 
   // ---------- Lightning ----------
@@ -330,7 +357,9 @@
 
     update(simT) {
       if (simT >= this.next) {
-        this.spawn(simT);
+        // Lightning only fires in the mature stage — thin the strike rate by
+        // the lifecycle factor (cumulus/dissipating storms go quiet).
+        if (Math.random() < live.stageFx.ltg) this.spawn(simT);
         const mean = 4.0 / params.freq;
         this.next = simT + mean * (0.25 - Math.log(1 - Math.random()) * 0.85);
       }
@@ -454,6 +483,8 @@
   bindRange('speed', v => v.toFixed(2) + '×');
   bindRange('wind');
   bindRange('motion', v => v.toFixed(2) + '×');
+  const stageName = v => (v < 0.30 ? 'cumulus' : v < 0.62 ? 'mature' : 'dissipating');
+  bindRange('stage', stageName);
   bindRange('density');
   bindRange('coverage');
   bindRange('size', v => v.toFixed(2) + '×');
@@ -469,6 +500,9 @@
 
   const sunMotionEl = document.getElementById('sunMotion');
   sunMotionEl.addEventListener('change', () => { params.sunMotion = sunMotionEl.checked; });
+
+  const lifecycleEl = document.getElementById('lifecycle');
+  lifecycleEl.addEventListener('change', () => { params.lifecycle = lifecycleEl.checked; });
 
   const camLockEl = document.getElementById('camLock');
   camLockEl.addEventListener('change', () => { camera.lock = camLockEl.checked; });
@@ -591,6 +625,18 @@
       document.getElementById('v-sunAz').textContent = az.toFixed(0) + '°';
     }
 
+    // Storm lifecycle: cumulus → mature → dissipating, then a fresh cell
+    // grows where the old one died. Full cycle ≈ 7 min at 1× speed.
+    if (params.lifecycle) {
+      let g = params.stage + dt * params.speed / 420;
+      if (g >= 1) g = 0;
+      params.stage = g;
+      const stEl = document.getElementById('stage');
+      stEl.value = g;
+      document.getElementById('v-stage').textContent =
+        (g < 0.30 ? 'cumulus' : g < 0.62 ? 'mature' : 'dissipating');
+    }
+
     // Advance the storm along its track (gently meandering downwind).
     if (params.motion > 0.001) {
       const wob = Math.sin(simT * 0.004 + storm.meanderPhase) * 0.5;
@@ -652,6 +698,7 @@
     gl.uniform4f(U.uShear, storm.shearDir[0], storm.shearDir[1],
       live.shearZ * (0.55 + 0.45 * Math.min(params.wind, 2)), 0);
     gl.uniform4fv(U.uWall, live.wall);
+    gl.uniform1f(U.uDecay, live.stageFx.decay);
     gl.uniform1f(U.uDensityMul, params.density);
     gl.uniform1f(U.uCoverage, params.coverage);
     gl.uniform1i(U.uSteps, q.steps);

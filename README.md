@@ -27,7 +27,13 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
   gently meandering track roughly downwind, ~43 km/h at 1×; 0 parks it), seed +
   🎲 New storm (regenerates the cell layout and noise field, re-aims the
   camera). Rain core, wall cloud, lightning and the camera lock all follow the
-  moving storm — lock mode is a storm chase.
+  moving storm — lock mode is a storm chase. The Stage slider scrubs the storm
+  through its life cycle (cumulus → mature → dissipating, after the classic
+  three-stage model in `reference/`): cumulus is a short rain-free tower with
+  no anvil, mature is the full supercell, dissipating rains out and erodes the
+  column until only the glaciated anvil remnant lingers. "Storm lifecycle"
+  auto-evolves through the cycle (≈7 min at 1× speed) and then regrows a fresh
+  cell.
 - **⚡ Randomize everything** — rerolls all colors, storm structure, sky layers,
   sun position and weather settings (leaves speed and render settings alone).
 - **Clouds** — storm size (0.5×–2×, scales the whole cell live; height scales

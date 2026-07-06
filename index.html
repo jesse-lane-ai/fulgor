@@ -79,6 +79,10 @@
     <input type="range" id="wind" min="0" max="3" step="0.05" value="1">
     <label>Storm motion <span class="val" id="v-motion">1.00×</span></label>
     <input type="range" id="motion" min="0" max="3" step="0.05" value="1">
+    <label>Stage <span class="val" id="v-stage">mature</span></label>
+    <input type="range" id="stage" min="0" max="1" step="0.005" value="0.5"
+           title="Storm lifecycle stage: cumulus → mature → dissipating">
+    <label class="checkrow" style="margin:6px 0"><input type="checkbox" id="lifecycle"> Storm lifecycle (auto evolve)</label>
     <div class="row">
       <input type="number" id="seed" value="1234" min="0" max="999999" step="1" title="Storm seed">
       <button id="reseed">🎲 New storm</button>

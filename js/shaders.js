@@ -25,6 +25,7 @@ uniform vec3  uBoundsMax;
 uniform vec4  uRain;          // x, z, radius, strength (forward-flank core)
 uniform vec4  uShear;         // xy: wind shear dir, z: strength (km), w: unused
 uniform vec4  uWall;          // x, z, radius, strength (wall cloud lowering)
+uniform float uDecay;         // dissipating-stage erosion, 0 = healthy storm
 
 uniform float uDensityMul;
 uniform float uCoverage;
@@ -151,15 +152,18 @@ float shapeField(vec3 p) {
         // the shelf cloud from the barrel.
         float dwn = clamp(u / max(tw.z * w, 0.1), 0.0, 1.0)
                   * (1.0 - smoothstep(0.20, 0.50, hn));
-        r *= 1.0 - ledge * 0.15 * lm * (1.0 - 0.65 * dwn);
+        r *= 1.0 - ledge * 0.15 * lm * (1.0 - 0.65 * dwn) * (1.0 - 0.8 * uDecay);
       }
       float vf = smoothstep(-0.04, 0.10, hn) * (1.0 - smoothstep(0.84, 1.03, hn));
       best = smax(best, (1.0 - r) * vf, 0.25);
     }
     // Overshooting top: a dome punching above the anvil on the main updraft.
+    // Only once the tower actually reaches the tropopause (a cumulus-stage
+    // turret has no anvil to overshoot), and it collapses first when the
+    // storm dissipates — no updraft, no dome.
     if (i == 0 && hn > 0.85) {
       float os = 1.0 - length(vec3(off.x / (tw.z * 0.42), (p.y - top) / 0.95, off.y / (tw.z * 0.42)));
-      best = smax(best, os * 0.85, 0.2);
+      best = smax(best, os * 0.85 * smoothstep(0.45, 0.75, tallness) * (1.0 - 0.9 * uDecay), 0.2);
     }
   }
   // Weld each tower to its neighbor along the flanking line (main->flank1->
@@ -190,6 +194,14 @@ float shapeField(vec3 p) {
 float cloudDensity(vec3 p, bool detail) {
   float d = 0.0;
   float s = shapeField(p);
+  // Dissipating stage: the updraft has died, so the low/mid column rains out
+  // and erodes to ragged wisps first, while the glaciated anvil remnant
+  // lingers aloft — fading too as decay completes so the cycle can restart.
+  if (uDecay > 0.001) {
+    float hd = clamp((p.y - CLOUD_BASE) / 8.0, 0.0, 1.0);
+    float lowCarve = 1.0 - smoothstep(0.55, 0.85, hd);
+    s -= uDecay * (0.50 * lowCarve + 0.12 + 0.40 * smoothstep(0.80, 1.0, uDecay));
+  }
   // Wall cloud: a lowered base hanging under the rear of the main updraft.
   // Folded into the same density field as the storm (it boosts the shape and
   // shares the storm's noise) so it always stays attached to the base above.
@@ -237,7 +249,7 @@ float cloudDensity(vec3 p, bool detail) {
         float band = sin(p.y * 6.5 + atan(rel.y, rel.x) * 0.7 + n * 2.0 - uTime * 0.05);
         float bm = smoothstep(0.03, 0.18, hb) * (1.0 - smoothstep(0.42, 0.62, hb))
                  * (1.0 - smoothstep(0.90, 1.50, rr));
-        n += band * 0.07 * bm;
+        n += band * 0.07 * bm * (1.0 - 0.8 * uDecay);
       }
     }
     float thr = 0.85 - 0.30 * uCoverage;
@@ -246,7 +258,7 @@ float cloudDensity(vec3 p, bool detail) {
       float e = fbm3(q * 4.1 + vec3(uTime * 0.01, 0.0, 0.0));
       d = clamp(d - (1.0 - e) * (1.0 - d) * 0.55 * (1.0 - wallM * 0.5), 0.0, 1.0);
     }
-    d *= uDensityMul;
+    d *= uDensityMul * (1.0 - 0.30 * uDecay);
   }
   // Mid-level scattered cumulus between the viewer and the storm.
   if (uMidClouds > 0.001 && p.y > 1.1 && p.y < 2.5) {
@@ -435,9 +447,13 @@ void main() {
         // (both direct sun and the sky ambient, which is mostly blocked too).
         float under = 0.0;
         if (pos.y < CLOUD_BASE + 0.25) {
+          // Weight each pool by its feature's strength so a rainless cumulus-
+          // or dissipating-stage cloud doesn't cast a phantom dark patch.
           float r1 = length(pos.xz - uRain.xy) / (uRain.z * 1.6);
           float r2 = length(pos.xz - uWall.xy) / (uWall.z * 2.5);
-          under = smoothstep(0.0, 0.4, clamp(1.0 - min(r1, r2), 0.0, 1.0));
+          float u1 = (1.0 - r1) * clamp(uRain.w * 1.6, 0.0, 1.0);
+          float u2 = (1.0 - r2) * clamp(uWall.w * 2.2, 0.0, 1.0);
+          under = smoothstep(0.0, 0.4, clamp(max(u1, u2), 0.0, 1.0));
           // Ramp in gradually below the base so the lowering shades smoothly
           // into the storm above instead of switching dark at a seam.
           under *= 1.0 - smoothstep(CLOUD_BASE - 0.30, CLOUD_BASE + 0.25, pos.y);
