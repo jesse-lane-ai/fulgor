@@ -123,31 +123,22 @@
     const shear = 2.5 + rand() * 2.5;
 
     const towers = [];
-    // Main updraft (always index 0 — the shader grows the overshooting top on it).
-    const mainR = 2.5 + rand() * 1.3;
-    const mainTop = 10.0 + rand() * 2.5;
+    // One dominant updraft — a supercell is a single rotating storm, so only
+    // tower 0 ever reaches the tropopause (and grows the anvil + overshoot).
+    const mainR = 3.0 + rand() * 1.3;
+    const mainTop = 10.5 + rand() * 2.5;
     towers.push({ x: cx, z: cz, r: mainR, top: mainTop, phase: rand() * Math.PI * 2 });
-    // Flanking line: successively shorter towers stepping upwind.
+    // Flanking line: a low staircase of cumulus hugging the updraft and
+    // stepping down as it trails upwind — never competing columns.
     const nFlank = 2 + Math.floor(rand() * 2);
+    let fd = mainR * (0.5 + rand() * 0.15);
     for (let i = 0; i < nFlank; i++) {
-      const dist = 2.4 + i * (1.6 + rand() * 0.8);
+      fd += 1.3 + rand() * 0.6;
       towers.push({
-        x: cx - sdx * dist + (rand() - 0.5) * 0.8,
-        z: cz - sdz * dist + (rand() - 0.5) * 1.2,
-        r: Math.max(1.7 - i * 0.35 + rand() * 0.3, 0.8),
-        top: Math.max(mainTop * (0.55 - i * 0.13) + rand(), CLOUD_BASE + 2.0),
-        phase: rand() * Math.PI * 2,
-      });
-    }
-    // Occasionally a separate distant cell.
-    if (rand() < 0.5) {
-      const ang = rand() * Math.PI * 2;
-      const dist = 4.5 + rand() * 3.0;
-      towers.push({
-        x: cx + Math.cos(ang) * dist,
-        z: cz + Math.sin(ang) * dist * 0.5,
-        r: 1.4 + rand(),
-        top: 5.0 + rand() * 3.0,
+        x: cx - sdx * fd + (rand() - 0.5) * 0.6,
+        z: cz - sdz * fd + (rand() - 0.5) * 0.9,
+        r: Math.max(1.9 - i * 0.35 + rand() * 0.25, 0.8),
+        top: CLOUD_BASE + (mainTop - CLOUD_BASE) * (0.34 - i * 0.09) + rand() * 0.6,
         phase: rand() * Math.PI * 2,
       });
     }
@@ -165,7 +156,7 @@
       seedOffset: [rand() * 97, rand() * 97, rand() * 97],
       rain: [cx + sdx * rainDist, cz + sdz * rainDist, mainR * 0.95, 0.7 + rand() * 0.5],
       wall: [cx - sdx * (0.8 + rand() * 0.6), cz - sdz * (0.8 + rand() * 0.6),
-             0.8 + rand() * 0.5, 0.7 + rand() * 0.5],
+             1.1 + rand() * 0.6, 0.55 + rand() * 0.4],
     };
     stormOffset[0] = 0; stormOffset[1] = 0;
     // Reset the camera to ground level, aimed at the main cell.
@@ -202,7 +193,9 @@
       towerData[i * 4 + 2] = r;
       towerData[i * 4 + 3] = top;
       live.towers.push({ x, z, r, top });
-      const pad = r * 2.1;
+      // Tall towers flare into the disc anvil (~2.6× radius) — pad for it.
+      const tall = Math.min(Math.max((top - CLOUD_BASE) / 10, 0), 1);
+      const pad = r * (1.7 + 1.6 * tall) + 1.5;
       mnx = Math.min(mnx, x - pad); mxx = Math.max(mxx, x + pad);
       mnz = Math.min(mnz, z - pad); mxz = Math.max(mxz, z + pad);
       mxy = Math.max(mxy, top);

@@ -89,12 +89,14 @@ float fbm3(vec3 p) {
   return s / 0.875;
 }
 
-// Cumulonimbus silhouette: rounded base, slight waist, anvil near the top
-// (the directional anvil spread is handled by the shear elongation).
-float widthProfile(float h) {
-  float w = mix(0.70, 1.0, smoothstep(-0.08, 0.20, h));
-  w *= mix(1.0, 0.84, smoothstep(0.30, 0.62, h));
-  w *= mix(1.0, 1.55, smoothstep(0.72, 0.94, h));
+// Cumulonimbus silhouette: broad base, slight mid waist, and — only on towers
+// tall enough to reach the tropopause — a wide disc anvil flaring at the top.
+// Short flanking cumulus stay simple rounded turrets.
+float widthProfile(float h, float tall) {
+  float w = mix(0.92, 1.0, smoothstep(-0.08, 0.18, h));
+  w *= mix(1.0, 0.88, smoothstep(0.25, 0.58, h));
+  float flare = 1.0 + 1.35 * smoothstep(0.70, 0.86, h);
+  w *= mix(1.0, flare, smoothstep(0.50, 0.90, tall));
   return w;
 }
 
@@ -114,17 +116,23 @@ float shapeField(vec3 p) {
     // Wind shear: the updraft tilts downwind and the anvil drifts further.
     // Short flanking towers barely reach the shear layer.
     float tallness = clamp((top - CLOUD_BASE) / 10.0, 0.0, 1.0);
-    float drift = (hn * hn * 0.15 + smoothstep(0.72, 0.98, hn) * 0.85) * uShear.z * tallness;
+    float drift = (hn * hn * 0.15 + smoothstep(0.70, 0.98, hn) * 0.55) * uShear.z * tallness;
     vec2 off = p.xz - tw.xy - uShear.xy * drift;
     if (hn <= 1.04) {
-      float w = widthProfile(hn);
-      // Anvil spreads far downwind, stays short on the back-sheared side.
-      float sa = smoothstep(0.72, 0.95, hn) * tallness;
+      float w = widthProfile(hn, tallness);
+      // The disc anvil gets an extra push downwind, short on the back-sheared side.
+      float sa = smoothstep(0.68, 0.92, hn) * tallness;
       float u = dot(off, uShear.xy);
       float v = -off.x * uShear.y + off.y * uShear.x;
-      float elong = 1.0 + (u > 0.0 ? 1.1 : 0.25) * sa * uShear.z * 0.30;
+      float elong = 1.0 + (u > 0.0 ? 0.7 : 0.2) * sa * uShear.z * 0.22;
       float r = length(vec2(u / elong, v)) / (tw.z * w);
-      float vf = smoothstep(-0.04, 0.10, hn) * (1.0 - smoothstep(0.82, 1.04, hn));
+      // Undulate the anvil rim: without this the disc edge is a perfect cone
+      // and reads as a razor-straight CG line from below.
+      if (sa > 0.01) {
+        float wob = vnoise(vec3(p.x * 0.22, p.y * 0.35, p.z * 0.22) + uSeedOffset);
+        r *= 1.0 + (wob - 0.5) * 0.5 * sa;
+      }
+      float vf = smoothstep(-0.04, 0.10, hn) * (1.0 - smoothstep(0.84, 1.03, hn));
       best = smax(best, (1.0 - r) * vf, 0.25);
     }
     // Overshooting top: a dome punching above the anvil on the main updraft.
@@ -145,7 +153,7 @@ float cloudDensity(vec3 p, bool detail) {
   float wallM = 0.0;
   if (uWall.w > 0.0 && p.y > 0.40 && p.y < CLOUD_BASE + 0.7) {
     float rw = length(p.xz - uWall.xy) / uWall.z;
-    if (rw < 1.0) wallM = (1.0 - rw) * smoothstep(0.40, 0.60, p.y) * uWall.w;
+    if (rw < 1.0) wallM = (1.0 - rw) * smoothstep(0.38, 0.72, p.y) * uWall.w;
   }
   if (s > 0.01 || wallM > 0.005) {
     vec3 q = p * 0.30 + uSeedOffset;
@@ -158,7 +166,21 @@ float cloudDensity(vec3 p, bool detail) {
     n = n * n * (3.0 - 2.0 * n);  // more contrast between puffs and gaps
     // Anvil region is stratiform: damp the noise so it spreads smooth and solid.
     float hh = clamp((p.y - CLOUD_BASE) / 8.0, 0.0, 1.0);
-    n = mix(n, 0.78, smoothstep(0.62, 0.95, hh));
+    n = mix(n, 0.78, 0.62 * smoothstep(0.62, 0.95, hh));
+    // Helical striations around the rotating updraft barrel: the stacked-plate
+    // banding of the mesocyclone, slowly turning about the main tower's axis.
+    vec4 mt = uTowers[0];
+    float hb = (p.y - CLOUD_BASE) / max(mt.w - CLOUD_BASE, 0.001);
+    if (hb > 0.03 && hb < 0.62) {
+      vec2 rel = p.xz - mt.xy;
+      float rr = length(rel) / max(mt.z, 0.001);
+      if (rr < 1.5) {
+        float band = sin(p.y * 4.5 + atan(rel.y, rel.x) * 1.5 + n * 2.0 - uTime * 0.05);
+        float bm = smoothstep(0.03, 0.18, hb) * (1.0 - smoothstep(0.42, 0.62, hb))
+                 * (1.0 - smoothstep(0.90, 1.50, rr));
+        n += band * 0.07 * bm;
+      }
+    }
     float thr = 0.85 - 0.30 * uCoverage;
     d = clamp((max(s, 0.0) + wallM * 0.9 - thr * (1.0 - n)) * 2.6, 0.0, 1.0);
     if (detail && d > 0.0 && d < 0.9) {
@@ -346,16 +368,18 @@ void main() {
         float Ts = exp(-ext * dt);
         float vis = lightVisibility(pos, uSunDir, 0.14, uLightSteps);
         // The rain core and wall cloud sit in the storm's own shadow — the
-        // short light march can't see the cloud mass above, so darken there.
+        // short light march can't see the cloud mass above, so darken there
+        // (both direct sun and the sky ambient, which is mostly blocked too).
+        float under = 0.0;
         if (pos.y < CLOUD_BASE + 0.2) {
           float r1 = length(pos.xz - uRain.xy) / (uRain.z * 1.6);
           float r2 = length(pos.xz - uWall.xy) / (uWall.z * 2.5);
-          float under = smoothstep(0.0, 0.4, clamp(1.0 - min(r1, r2), 0.0, 1.0));
+          under = smoothstep(0.0, 0.4, clamp(1.0 - min(r1, r2), 0.0, 1.0));
           vis *= mix(1.0, 0.10, under);
         }
         vec3 S = uSunColor * 4.0 * vis * (ph * 1.5 + 0.05);
         float hn = clamp((pos.y - CLOUD_BASE) / 9.0, 0.0, 1.0);
-        S += uAmbColor * (0.3 + 0.7 * hn) * 0.9 + uFlashAmb * 0.5;
+        S += uAmbColor * (0.3 + 0.7 * hn) * 0.9 * mix(1.0, 0.30, under) + uFlashAmb * 0.5;
         for (int j = 0; j < 3; j++) {
           float I = uFlashPos[j].w;
           if (I > 0.002) {

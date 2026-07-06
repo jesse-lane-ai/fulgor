@@ -51,12 +51,15 @@ weak/software GPUs, which are also auto-detected).
 ## How it works
 
 - `js/shaders.js` — a single fragment-shader raymarcher (units are km). The
-  storm follows supercell anatomy (`reference/anatomy-of-supercell.jpg`): a
-  main updraft whose anvil drifts and elongates downwind under wind shear
-  (short back-sheared edge upwind), an overshooting-top dome, a flanking line
-  of shorter towers stepping upwind, a dark wall-cloud lowering on the rear
-  flank, and the precipitation core displaced onto the forward flank (kept in
-  the storm's own shadow). Cells are analytic profiles blended with
+  storm follows supercell anatomy (see the photos in `reference/`): one
+  dominant rotating updraft — a supercell is a single cell, so only tower 0
+  ever reaches the tropopause — wearing helical mesocyclone striations, topped
+  by a wide disc anvil (flat base, undulating rim, drifting and elongating
+  downwind with a short back-sheared edge) and an overshooting-top dome. A low
+  staircase of flanking-line cumulus hugs the updraft upwind, a dark
+  wall-cloud lowering hangs on the rear flank, and the precipitation core is
+  displaced onto the forward flank (kept in the storm's own shadow, sun and
+  sky ambient both). Cells are analytic profiles blended with
   smooth-max, eroded by domain-warped fBm noise that advects with wind and
   morphs over time; ~30% of intracloud flashes are anvil crawlers placed in
   the sheared anvil layer. Lighting = sun with a short shadow
