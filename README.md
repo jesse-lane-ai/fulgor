@@ -39,29 +39,59 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
   quality/scale, sound/volume and playback speed aren't included (those are
   your local viewing preferences, not part of the storm).
 - **⚡ Randomize everything** — rerolls all colors, storm structure, sky layers,
-  sun position and weather settings (leaves speed and render settings alone).
+  time of day, moon phase and color, and weather settings (leaves speed and
+  render settings alone).
 - **Clouds** — storm size (0.5×–2×, scales the whole cell live; height scales
   more gently and caps at the tropopause), density, coverage, and a mid-level
   scattered cumulus field that drifts between the viewer and the storm.
 - **Lightning** — strike frequency, intensity, duration (average flash length;
   each event still rolls its own — quick pops through long multi-restrike
   flickers), bolt color, cloud-flash color.
-- **Atmosphere** — ambient (sky/atmospheric) light color, sun color, sun
-  azimuth and height (azimuth 0° puts the sun behind the storm for a backlit
-  silhouette; negative height sinks it below the horizon for full night),
-  background cloud bank and cirrus amounts, exposure. "Moving sun" animates a
-  full day/night arc (peaking at the Sun-height value, dipping below the
-  horizon on the far side) — one cycle ≈ 10 minutes at 1× speed, scaled by the
-  speed slider.
+- **Atmosphere** — the **Time of day** slider is the master clock (00:00
+  midnight → 12:00 noon → back), and it drives both the sun and the moon. Sun
+  azimuth/height are computed from the hour (sunrise due east, noon high and due
+  south, sunset due west, deep below the horizon at night) and written back into
+  the manual Sun azimuth/height sliders so they always mirror the sun — but grab
+  either of those and you take manual control (the clock stops re-posing the sun
+  until you touch Time of day again). **Auto-advance clock** winds the time
+  forward for a live day/night cycle (a full 24h ≈ 10 min at 1× speed and 1×
+  cycle speed); **Cycle speed** sets how fast. The sky itself (zenith/horizon
+  colors, the warm halo around the sun, the shared haze tint) is driven entirely
+  by sun height, not hand-picked: a clear blue zenith by day, a widening,
+  reddening glow around the sun through golden hour, and a collapse into
+  indigo/purple twilight — then true dark, star-filled night — once the sun
+  sinks below the horizon (see "Sky model" below).
+- **Moon** — a 🌙 Moon toggle renders a moon disc in the sky (soft limb, faint
+  corona, subtle maria) with a **Moon phase** slider (0 new → 0.5 full → 1 new)
+  that shades a correct curved terminator, crescent through gibbous, plus a hint
+  of earthshine on the dark limb near full. A **Moon color** picker tints both
+  the disc and the moonlight (default pale ivory; push it to harvest-orange or
+  blood-moon). By default the moon is **astronomically coupled** to the clock:
+  its rise/set offset follows the phase, so a full moon rises opposite the sun
+  (high at midnight) and a new moon rides with the sun. **Decouple moon** frees
+  the Moon azimuth/height sliders so you can pin the moon anywhere for an
+  artistic look, phase and position independent of the clock. Moonlight lights
+  the night: at a bright-enough phase and elevation the moon casts a cool, dim
+  directional light through the same cloud shadow-march as the sun, so cloud
+  tops facing the moon are faintly rim-lit and self-shadow — night is no longer
+  a black void, and its strength scales with phase (full ≈ bright, new ≈ 0) and
+  moon elevation, fading out once the sun climbs.
+- **Atmosphere (cont.)** — the "Ambient light" color picker no longer sets the
+  sky directly; it's an optional tint/strength multiplier on top of the
+  auto-computed sky-fill light (its default is neutral, so existing share links
+  still load looking like themselves). Sky haze (clarity) thickens the
+  horizon/aerial-perspective haze and pulls distant cloud detail down into it
+  sooner. Background cloud bank and cirrus amounts, exposure.
 - **Audio** — a 🔊 Sound toggle and volume. Fully procedural (no audio files):
-  rain hiss tracks the precipitation core (and your distance to it), wind
-  tracks the Wind slider, a low rumble carries the storm's presence, and each
-  lightning event answers with synthesized thunder in one of three randomized
-  characters — a cannon boom (favored by close ground strikes), a tumbling
-  multi-lobe roll, or a long dull horizon roll (favored by distant flashes) —
-  arriving sooner and punchier up close, later and more reverberant far away,
-  panned to where the flash happened. The whole bed follows the lifecycle
-  stage: a cumulus or dissipated storm is quiet.
+  rain hiss (with individual pitter-patter drops) tracks the precipitation
+  core and your distance to it, howling gusty wind tracks the Wind slider, a
+  low rumble carries the storm's presence, and each lightning event answers
+  with layered synthesized thunder — an instant electrostatic fizz at the
+  flash, then a shattering crack (close ground strikes), a fluttering tearing
+  peal with rapid-fire branch claps, and long rolling bass rumbles — arriving
+  sooner and punchier up close, later and duller far away, spatially panned
+  to where the flash happened. The whole bed follows the lifecycle stage: a
+  cumulus or dissipated storm is quiet.
 - **Render** — quality (raymarch step counts) and resolution scale.
 
 URL overrides: `?quality=minimal|low|medium|high|ultra&scale=0.5` (used for
@@ -96,20 +126,67 @@ still get your own quality/scale.
   point lights with their own shadow taps, plus a scene-wide flicker term.
   Bolts are rendered analytically as ray-to-segment glow, occluded by the
   cloud transmittance at the bolt's depth and by the horizon treeline.
+- **Sky model** — sun elevation (`uSunDir.y`) is the single driver of the sky.
+  `js/main.js` walks a tuned table of color keyframes (night → dusk →
+  golden-hour → day) keyed on sun-elevation degrees and smoothstep-blends
+  between the nearest two into four colors uploaded as uniforms each frame:
+  `uSkyZenith`/`uSkyHorizon` (the sky gradient's two ends), `uSunTint` (the
+  Mie-halo color/strength around the sun — an HDR value that grows and reddens
+  as the sun nears the horizon), and `uHazeCol` (the shared low-atmosphere
+  tone). `js/shaders.js`'s `skyColor()` then just blends physically-shaped
+  terms instead of encoding the color ramp itself: a Rayleigh-style
+  `pow(1-h, 1.8)` falloff mixes zenith into horizon color, a multi-lobe Mie
+  term adds the sun's forward-scatter glow, and the "Sky haze" (clarity)
+  slider (`uHazeAmt`) bleeds `uHazeCol` further into the low sky. That same
+  `uHazeCol` also drives the ground's horizon blend (`groundColor()`) and the
+  cloud aerial-perspective fade, so sky, clouds and ground share one
+  atmosphere. Clouds' sky-fill ambient light is likewise auto-derived from the
+  sky model (`ambientFill()`, mixing `uSkyZenith`/`uHazeCol`) rather than a
+  separately hand-tuned color; the "Ambient light" picker (`uAmbColor`) is
+  normalized in JS against its own default swatch's luminance so it lands as a
+  neutral ~1× multiplier at that default and only pushes the look brighter,
+  dimmer, or tinted when changed.
+- **Day/night clock & moon** — a single `timeOfDay` hour (0–24) is the master
+  driver. `sunAzEl(hour)` turns the sun through a full 360°/day azimuth and a
+  sinusoidal elevation arc (crossing zero at 06:00/18:00, peaking near noon,
+  deep negative at midnight); the result feeds the same sun-elevation sky model
+  above and is written back into the manual sun sliders each frame (a `sunManual`
+  flag lets a hand-drag of those sliders override the clock). Auto-advance just
+  winds `timeOfDay` forward. The moon's azimuth/elevation are the sun's arc
+  evaluated at `hour − 24·phase`, so a full moon (phase 0.5) lags the sun by 12h
+  (opposite it in the sky) and a new moon rides with it; a decouple toggle
+  swaps in manual `moonAz`/`moonEl`. The moon disc is drawn in `skyColor()` as a
+  small sphere: it reconstructs the near-hemisphere normal across the disc and
+  Lambert-shades it against a synthesized `uMoonLightDir` (built in JS straight
+  from the phase, so the terminator always matches the slider whether coupled or
+  not), giving a real curved crescent→gibbous terminator, plus a soft limb,
+  limb-darkening, maria mottling, earthshine and a faint corona, all tinted by
+  `uMoonColor`. Moonlight (`uMoonlight`, scaled in JS by illuminated fraction ×
+  moon elevation × sun-below-horizon) reuses the sun's cloud shadow-march with
+  `uMoonDir` at low cool intensity; the direct-sun cloud term is gated by
+  `uSunDir.y` so it switches off below the horizon and lets the moon take over
+  at night.
 - `js/main.js` — WebGL setup, seeded storm generation (mulberry32), slow
   convective growth cycles per cell, and the lightning scheduler: Poisson-ish
   strike timing, 65% intracloud / 35% cloud-to-ground, multi-restrike flicker
   envelopes, and midpoint-displacement bolt geometry with branches (≤48
   segments uploaded as uniforms).
-- `js/audio.js` — procedural Web Audio sound engine, no assets: looping
-  filtered-noise beds (rain hiss + body, gusting two-layer wind, deep ambient
-  rumble) smoothed each frame from sim state, plus per-strike thunder
-  one-shots — three randomized rumble characters (cannon boom with a sub-bass
-  drop, tumbling roll, long horizon roll) picked by distance and strike type,
-  through a generated decaying-noise convolver with compressed distance-aware
-  delay, muffling and stereo pan. Everything runs through a soft compressor;
-  the context starts on the Sound toggle (autoplay policy) and suspends while
-  the tab is hidden.
+- `js/audio.js` — procedural spatial sound engine, no assets: a vanilla-JS
+  port of the spatial-thunder-sound-engine `AudioEngine` (its auto-strike
+  scheduler removed — the sim owns all lightning timing and positions).
+  Looping pink-noise beds smoothed each frame from sim state: rain through an
+  intensity-tracked lowpass plus a randomized pitter-patter drop generator,
+  wind through a resonant bandpass howled by two detuned gust LFOs, and a
+  deep lowpassed ambient-presence rumble. Per-strike thunder is HRTF-panned
+  from the flash bearing with a compressed distance delay (divided by
+  playback speed so fast-forward stays in sync): an instant electrostatic
+  fizz at flash time, then a waveshaped shattering crack (CG strikes bias it
+  sharper), a fluttering "tearing canvas" peal with staggered branch
+  micro-claps, and 5–10 layered dual-path bass rumbles (pure sub-bass plus
+  saturated low-mid harmonics for small speakers) that drift as they roll.
+  Everything runs through a soft compressor; the context starts on the Sound
+  toggle (autoplay policy), and disabling or hiding the tab suspends cleanly,
+  cancelling every pending timer and scheduled one-shot.
 
 Debug hook: `window.__ts` exposes `params`, `camera`, `lightning`
 (`lightning.force = 'cg' | 'ic'; lightning.next = 0` forces a strike),

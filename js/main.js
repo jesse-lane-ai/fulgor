@@ -46,7 +46,9 @@
    'uDensityMul', 'uCoverage',
    'uSteps', 'uLightSteps', 'uExposure', 'uHighDetail', 'uFlashAmb', 'uAmbColor',
    'uSunColor', 'uSunDir', 'uBgClouds', 'uCirrus', 'uMidClouds',
-   'uBoltCount', 'uBoltColor', 'uBoltIntensity'
+   'uBoltCount', 'uBoltColor', 'uBoltIntensity',
+   'uSkyZenith', 'uSkyHorizon', 'uSunTint', 'uHazeCol', 'uHazeAmt',
+   'uMoonDir', 'uMoonColor', 'uMoonPhase', 'uMoonLightDir', 'uMoonlight'
   ].forEach(n => { U[n] = gl.getUniformLocation(prog, n); });
   U.uTowers = gl.getUniformLocation(prog, 'uTowers[0]');
   U.uFlashPos = gl.getUniformLocation(prog, 'uFlashPos[0]');
@@ -64,7 +66,10 @@
     boltColor: '#eee9ff', flashColor: '#d7c9ff',
     ambColor: '#2e3b55', sunColor: '#ff9e63',
     sunAz: 70, sunEl: 6, sunMotion: false,
-    bgClouds: 0.5, cirrus: 0.55, midClouds: 0.3,
+    timeOfDay: 14, cycleSpeed: 1.0,
+    moon: true, moonPhase: 0.5, moonColor: '#e8e6da', moonDecouple: false,
+    moonAz: -110, moonEl: 30,
+    bgClouds: 0.5, cirrus: 0.55, midClouds: 0.3, haze: 0.4,
     exposure: 1.1, quality: 'high', scale: 1.0,
   };
   const QUALITY = {
@@ -94,6 +99,51 @@
     const n = parseInt(hex.slice(1), 16);
     return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
   }
+
+  // ---------- Sky model ----------
+  // Sun elevation is the single driver of the whole sky look. Keyframes below
+  // go night -> twilight -> golden-hour -> day so the GLSL side (skyColor,
+  // groundColor, cloud ambient/aerial-haze) only has to blend four colors
+  // instead of encoding this curve itself. Elevation in degrees.
+  const vlerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  const vscale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
+
+  // Each stop: { el, zenith, horizon, sunTint, haze }. zenith/horizon are the
+  // sky gradient endpoints; sunTint is the Mie-halo color (can exceed 1.0 —
+  // it's an HDR glow term); haze is the shared low-atmosphere/ground tone.
+  const SKY_STOPS = [
+    { el: -18, zenith: [0.006, 0.007, 0.012], horizon: [0.010, 0.009, 0.016], sunTint: [0.0, 0.0, 0.0],    haze: [0.008, 0.008, 0.014] },
+    { el: -8,  zenith: [0.012, 0.014, 0.035], horizon: [0.10, 0.055, 0.085],  sunTint: [0.7, 0.18, 0.10],  haze: [0.07, 0.04, 0.06] },
+    { el: -2,  zenith: [0.02, 0.035, 0.09],   horizon: [0.55, 0.20, 0.13],    sunTint: [2.6, 0.55, 0.16],  haze: [0.30, 0.12, 0.09] },
+    { el: 2,   zenith: [0.035, 0.075, 0.20],  horizon: [0.95, 0.46, 0.20],    sunTint: [3.4, 1.15, 0.35],  haze: [0.55, 0.28, 0.15] },
+    { el: 8,   zenith: [0.05, 0.13, 0.34],    horizon: [0.92, 0.62, 0.34],    sunTint: [3.0, 1.7, 0.75],   haze: [0.55, 0.38, 0.24] },
+    { el: 20,  zenith: [0.06, 0.20, 0.52],    horizon: [0.62, 0.68, 0.66],    sunTint: [2.2, 1.9, 1.35],   haze: [0.42, 0.46, 0.46] },
+    { el: 60,  zenith: [0.05, 0.22, 0.62],    horizon: [0.55, 0.66, 0.78],    sunTint: [1.6, 1.55, 1.35],  haze: [0.40, 0.46, 0.52] },
+  ];
+  function skyModel(elDeg) {
+    const s = SKY_STOPS;
+    if (elDeg <= s[0].el) return s[0];
+    if (elDeg >= s[s.length - 1].el) return s[s.length - 1];
+    let i = 0;
+    while (i < s.length - 2 && elDeg > s[i + 1].el) i++;
+    const a = s[i], b = s[i + 1];
+    const t = (elDeg - a.el) / (b.el - a.el);
+    const st = t * t * (3 - 2 * t); // smoothstep for a soft cross-fade between stops
+    return {
+      zenith: vlerp(a.zenith, b.zenith, st),
+      horizon: vlerp(a.horizon, b.horizon, st),
+      sunTint: vlerp(a.sunTint, b.sunTint, st),
+      haze: vlerp(a.haze, b.haze, st),
+    };
+  }
+  // Luminance of the "Ambient light" picker's own default (#2e3b55), used to
+  // normalize it into a neutral ~1x multiplier at that default — see
+  // ambientFill() in shaders.js for why this keeps old share-links looking
+  // like themselves instead of double-tinting the new auto-ambient.
+  const AMB_DEFAULT_LUM = (() => {
+    const c = hexToRgb('#2e3b55');
+    return c[0] * 0.3 + c[1] * 0.5 + c[2] * 0.2;
+  })();
 
   // ---------- Storm generation ----------
   function mulberry32(a) {
@@ -598,14 +648,46 @@
   bindRange('intensity');
   bindRange('duration', v => v.toFixed(2) + '×');
   bindRange('exposure');
+  // Format a fractional hour (0..24) as HH:MM for the time-of-day readout.
+  const fmtClock = h => {
+    const hh = Math.floor(h) % 24;
+    const mm = Math.floor((h - Math.floor(h)) * 60);
+    return String(hh).padStart(2, '0') + ':' + String(mm).padStart(2, '0');
+  };
+  bindRange('timeOfDay', fmtClock);
+  bindRange('cycleSpeed', v => v.toFixed(2) + '×');
+  bindRange('moonPhase', v => {
+    const p = v;
+    if (p < 0.03 || p > 0.97) return 'new';
+    if (Math.abs(p - 0.5) < 0.03) return 'full';
+    if (Math.abs(p - 0.25) < 0.04) return 'first ¼';
+    if (Math.abs(p - 0.75) < 0.04) return 'last ¼';
+    return p < 0.5 ? 'waxing' : 'waning';
+  });
   bindRange('sunAz', v => v.toFixed(0) + '°');
   bindRange('sunEl', v => v.toFixed(1) + '°');
+  bindRange('moonAz', v => v.toFixed(0) + '°');
+  bindRange('moonEl', v => v.toFixed(1) + '°');
   bindRange('bgClouds');
   bindRange('cirrus');
   bindRange('midClouds');
+  bindRange('haze');
 
   const sunMotionEl = document.getElementById('sunMotion');
-  sunMotionEl.addEventListener('change', () => { params.sunMotion = sunMotionEl.checked; });
+  sunMotionEl.addEventListener('change', () => {
+    params.sunMotion = sunMotionEl.checked;
+    if (params.sunMotion) sunManual = false; // resume clock control of the sun
+  });
+  // Grabbing the sun sliders takes manual control; grabbing the time slider
+  // hands it back to the clock.
+  ['sunAz', 'sunEl'].forEach(id =>
+    document.getElementById(id).addEventListener('input', () => { sunManual = true; }));
+  document.getElementById('timeOfDay').addEventListener('input', () => { sunManual = false; });
+
+  const moonEl = document.getElementById('moon');
+  moonEl.addEventListener('change', () => { params.moon = moonEl.checked; });
+  const moonDecoupleEl = document.getElementById('moonDecouple');
+  moonDecoupleEl.addEventListener('change', () => { params.moonDecouple = moonDecoupleEl.checked; });
 
   const lifecycleEl = document.getElementById('lifecycle');
   lifecycleEl.addEventListener('change', () => { params.lifecycle = lifecycleEl.checked; });
@@ -630,7 +712,7 @@
     camera.fovTan = 0.55;
   });
 
-  ['boltColor', 'flashColor', 'ambColor', 'sunColor'].forEach(id => {
+  ['boltColor', 'flashColor', 'ambColor', 'sunColor', 'moonColor'].forEach(id => {
     const el = document.getElementById(id);
     el.addEventListener('input', () => { params[id] = el.value; });
   });
@@ -676,11 +758,18 @@
     set('freq', (0.3 + R() * 2.7).toFixed(2));
     set('intensity', (0.5 + R() * 1.5).toFixed(2));
     set('duration', (0.4 + R() * 1.8).toFixed(2));
-    set('sunAz', String(Math.round(R() * 360 - 180)));
-    set('sunEl', (R() * 30 - 6).toFixed(1));
+    // Time of day sets the sun; clear manual-sun so the clock re-poses it.
+    set('timeOfDay', (R() * 24).toFixed(2));
+    sunManual = false;
+    set('moonPhase', R().toFixed(2));
+    // Mostly pale-ivory moons, occasionally a warm harvest / blood tint.
+    set('moonColor', R() < 0.25
+      ? hslToHex(R() * 40, 0.45 + R() * 0.4, 0.45 + R() * 0.15)
+      : hslToHex(40 + R() * 20, 0.05 + R() * 0.12, 0.86 + R() * 0.08));
     set('bgClouds', R().toFixed(2));
     set('cirrus', R().toFixed(2));
     set('midClouds', (R() * 0.8).toFixed(2));
+    set('haze', (0.15 + R() * 0.6).toFixed(2));
     set('ambColor', hslToHex(R() * 360, 0.15 + R() * 0.40, 0.16 + R() * 0.20));
     set('sunColor', hslToHex(R() * 360, 0.40 + R() * 0.50, 0.55 + R() * 0.20));
     set('flashColor', hslToHex(R() * 360, 0.15 + R() * 0.45, 0.72 + R() * 0.18));
@@ -711,8 +800,13 @@
     { id: 'ambColor', type: 'color' }, { id: 'sunColor', type: 'color' },
     { id: 'sunAz', type: 'range' }, { id: 'sunEl', type: 'range' },
     { id: 'sunMotion', type: 'check' },
+    { id: 'timeOfDay', type: 'range' }, { id: 'cycleSpeed', type: 'range' },
+    { id: 'moon', type: 'check' }, { id: 'moonPhase', type: 'range' },
+    { id: 'moonColor', type: 'color' }, { id: 'moonDecouple', type: 'check' },
+    { id: 'moonAz', type: 'range' }, { id: 'moonEl', type: 'range' },
     { id: 'bgClouds', type: 'range' }, { id: 'cirrus', type: 'range' },
     { id: 'midClouds', type: 'range' }, { id: 'exposure', type: 'range' },
+    { id: 'haze', type: 'range' },
   ];
 
   document.getElementById('shareBtn').addEventListener('click', () => {
@@ -744,25 +838,51 @@
 
   setTimeout(() => { document.getElementById('hint').style.opacity = '0'; }, 7000);
 
-  // ---------- Render loop ----------
-  // When the sun is moving, azimuth sweeps continuously and elevation follows
-  // a day arc that peaks (at the "Sun height" value) at azimuth 0 and dips
-  // below the horizon on the far side — a full day/night cycle.
-  function effectiveSunEl() {
-    if (!params.sunMotion) return params.sunEl;
-    const c = Math.cos(params.sunAz * Math.PI / 180);
-    return Math.max(-8 + (params.sunEl + 8) * c, -12);
-  }
-  function sunDirVec() {
-    const az = params.sunAz * Math.PI / 180;
-    const el = effectiveSunEl() * Math.PI / 180;
+  // ---------- Time-of-day clock ----------
+  // A single 0..24h clock is the master driver for both sun and moon
+  // positions. It sweeps the sun through a full day arc (azimuth turning east
+  // -> south -> west while elevation rises to noon and dips below the horizon
+  // at night), and every frame it writes the resulting az/el back into the
+  // manual sunAz/sunEl sliders so they always mirror the current sun and the
+  // user can still grab them to nudge the sun by hand when the clock is
+  // paused (the "Auto-advance" checkbox — the old #sunMotion — just runs the
+  // clock forward). MAX_DAY_EL caps the noon height so the tuned SKY_STOPS
+  // table (which tops out at 60°) stays in range.
+  const MAX_DAY_EL = 58;
+  const dirFromAzEl = (azDeg, elDeg) => {
+    const az = azDeg * Math.PI / 180, el = elDeg * Math.PI / 180;
     // Azimuth 0 = straight ahead (behind the storm), positive = to the right.
     return [Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el)];
+  };
+  // Sun az/el from the hour. Solar noon (12h) sits due south, high overhead
+  // (az 0, el MAX_DAY_EL); sunrise (6h) is due east (az -90, el 0), sunset
+  // (18h) due west (az +90, el 0); midnight is due north, deep below the
+  // horizon. Azimuth turns a full 360°/day; elevation is a sinusoid crossing
+  // zero at 6h/18h so twilight lands where it should.
+  function sunAzEl(hour) {
+    let az = (hour - 12) / 24 * 360;               // 12->0, 18->+90, 6->-90
+    az = ((az + 180) % 360 + 360) % 360 - 180;     // wrap to (-180, 180]
+    const el = MAX_DAY_EL * Math.sin((hour - 6) / 24 * 2 * Math.PI);
+    return [az, el];
+  }
+  // Moon az/el. Coupled to the sun by phase: a full moon (phase 0.5) rides
+  // ~12h opposite the sun (rises at sunset, high at midnight); a new moon
+  // (phase 0/1) rides with the sun. The offset is 24h*(phase) hours, so the
+  // moon's own arc is the sun arc evaluated at hour - offset. Decoupling lets
+  // the user pin moon az/el/phase for a chosen artistic look.
+  function moonAzEl() {
+    if (params.moonDecouple) return [params.moonAz, params.moonEl];
+    const offset = 24 * params.moonPhase;          // full moon -> 12h lag
+    return sunAzEl(params.timeOfDay - offset);
   }
   const flashPosData = new Float32Array(12);
   const flashColData = new Float32Array(9);
 
   let simT = 0;
+  // True once the user hand-drags Sun azimuth/height: the clock stops writing
+  // the sun so the manual pose sticks. Cleared by touching the time slider or
+  // enabling auto-advance.
+  let sunManual = false;
 
   // Apply a shared storm from the URL, if present — replays each field's own
   // input/change event so it reuses the same listener that already syncs
@@ -812,13 +932,34 @@
     last = now;
     simT += dt * params.speed;
 
+    // Time-of-day clock. When auto-advance is on it winds the clock forward
+    // (a full 24h cycle ≈ 10 min at 1× speed & 1× cycle speed). Either way the
+    // current time drives the sun az/el and writes them back into the manual
+    // sliders so they mirror the sun. The moon derives from the same clock.
+    // Time-of-day clock. When auto-advance is on it winds the clock forward
+    // (a full 24h cycle ≈ 10 min at 1× speed & 1× cycle speed) and the clock
+    // is authoritative: it drives sun az/el and writes them back into the
+    // manual sliders so they mirror the sun. When paused, the clock still
+    // follows whatever hour the timeOfDay slider is set to — but the moment
+    // the user grabs the manual sunAz/sunEl sliders (sunManual flag), those
+    // win, so hand-posing the sun still works. The moon derives from the same
+    // clock either way.
     if (params.sunMotion) {
-      let az = params.sunAz + dt * params.speed * 0.6; // full cycle ≈ 10 min at 1×
-      if (az > 180) az -= 360;
-      params.sunAz = az;
-      const azInput = document.getElementById('sunAz');
-      azInput.value = az;
-      document.getElementById('v-sunAz').textContent = az.toFixed(0) + '°';
+      let h = params.timeOfDay + dt * params.speed * params.cycleSpeed * (24 / 600);
+      h = ((h % 24) + 24) % 24;
+      params.timeOfDay = h;
+      const todEl = document.getElementById('timeOfDay');
+      todEl.value = h;
+      document.getElementById('v-timeOfDay').textContent = fmtClock(h);
+      sunManual = false;
+    }
+    if (!sunManual) {
+      const [az, el] = sunAzEl(params.timeOfDay);
+      params.sunAz = az; params.sunEl = el;
+      const azI = document.getElementById('sunAz'), elI = document.getElementById('sunEl');
+      azI.value = az; document.getElementById('v-sunAz').textContent = az.toFixed(0) + '°';
+      elI.value = Math.max(-10, Math.min(60, el));
+      document.getElementById('v-sunEl').textContent = el.toFixed(1) + '°';
     }
 
     // Storm lifecycle: cumulus → mature → dissipating, then a fresh cell
@@ -877,8 +1018,43 @@
     const q = QUALITY[params.quality];
     const flashCol = hexToRgb(params.flashColor);
     const boltCol = hexToRgb(params.boltColor);
-    const ambCol = hexToRgb(params.ambColor);
+    // Ambient light picker is now an optional tint/strength override on the
+    // auto-ambient (see ambientFill() in shaders.js), normalized so its own
+    // default value (#2e3b55) reads as a neutral ~1x multiplier.
+    const ambRaw = hexToRgb(params.ambColor);
+    const ambCol = vscale(ambRaw, 1 / Math.max(AMB_DEFAULT_LUM, 1e-4));
     const sunCol = hexToRgb(params.sunColor);
+    const sunEl = params.sunEl;
+    const sunDir = dirFromAzEl(params.sunAz, sunEl);
+    const sky = skyModel(sunEl);
+    // Moon direction, phase and moonlight strength.
+    const [moonAz, moonEl] = moonAzEl();
+    const moonDir = dirFromAzEl(moonAz, moonEl);
+    const moonCol = hexToRgb(params.moonColor);
+    // Illuminated fraction of the disc: 0 at new (phase 0/1), 1 at full (0.5).
+    const moonIllum = params.moon ? (1 - Math.abs(params.moonPhase - 0.5) * 2) : 0;
+    // Moon-light direction for the terminator. We synthesize it straight from
+    // the phase slider (rather than the true sun direction) so the disc always
+    // matches the requested phase, coupled or decoupled. -moonDir is the
+    // viewer-facing axis (full moon = lit from there); we tilt away from it by
+    // the phase angle within the disc's horizontal plane, sign picking the
+    // waxing (west limb) vs waning (east limb) lit side.
+    const phaseAng = Math.PI * 2 * Math.abs(params.moonPhase - 0.5); // 0=full, π=new
+    const wax = params.moonPhase < 0.5 ? 1 : -1;
+    // Disc horizontal tangent (mu in the shader): cross(moonDir, up).
+    let mux = moonDir[2], muz = -moonDir[0]; // cross([0,1,0]) xz components
+    const mul = Math.hypot(mux, muz) || 1; mux /= mul; muz /= mul;
+    const ca = Math.cos(phaseAng), sa = Math.sin(phaseAng) * wax;
+    const moonLightDir = [
+      -moonDir[0] * ca + mux * sa,
+      -moonDir[1] * ca,
+      -moonDir[2] * ca + muz * sa,
+    ];
+    // Moonlight lights the night: scales with illuminated fraction and moon
+    // elevation, and fades out once the sun climbs (daylight washes it away).
+    const moonUp = Math.max(0, Math.min(1, (moonEl + 3) / 12));
+    const sunDown = 1 - Math.min(1, Math.max(0, (sunEl + 6) / 8));
+    const moonlight = moonIllum * moonIllum * moonUp * sunDown;
     for (let i = 0; i < 3; i++) {
       const s = lightning.slots[i];
       flashPosData.set(s.pos, i * 4);
@@ -923,10 +1099,20 @@
     gl.uniform3fv(U.uFlashAmb, flashAmb);
     gl.uniform3fv(U.uAmbColor, ambCol);
     gl.uniform3fv(U.uSunColor, sunCol);
-    gl.uniform3fv(U.uSunDir, sunDirVec());
+    gl.uniform3fv(U.uSunDir, sunDir);
+    gl.uniform3fv(U.uMoonDir, moonDir);
+    gl.uniform3fv(U.uMoonColor, moonCol);
+    gl.uniform1f(U.uMoonPhase, params.moon ? params.moonPhase : -1.0);
+    gl.uniform3fv(U.uMoonLightDir, moonLightDir);
+    gl.uniform1f(U.uMoonlight, moonlight);
     gl.uniform1f(U.uBgClouds, params.bgClouds);
     gl.uniform1f(U.uCirrus, params.cirrus);
     gl.uniform1f(U.uMidClouds, params.midClouds);
+    gl.uniform3fv(U.uSkyZenith, sky.zenith);
+    gl.uniform3fv(U.uSkyHorizon, sky.horizon);
+    gl.uniform3fv(U.uSunTint, sky.sunTint);
+    gl.uniform3fv(U.uHazeCol, sky.haze);
+    gl.uniform1f(U.uHazeAmt, params.haze);
     // Spider/IC channels grow into view over ~0.22s instead of appearing
     // instantly (the "crawl" the name refers to — the round-robin segment
     // interleaving in genSpiderBolt makes a partial reveal spread outward

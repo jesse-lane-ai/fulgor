@@ -37,12 +37,32 @@ uniform int   uHighDetail;
 uniform vec4  uFlashPos[3];   // xyz position, w intensity
 uniform vec3  uFlashColor[3];
 uniform vec3  uFlashAmb;      // scene-wide flicker from active flashes
-uniform vec3  uAmbColor;
+uniform vec3  uAmbColor;      // "Ambient light" picker — optional tint/strength override
 uniform vec3  uSunColor;
 uniform vec3  uSunDir;
 uniform float uBgClouds;
 uniform float uCirrus;
 uniform float uMidClouds;
+
+// Sky model: the artistic curve (day → golden-hour → dusk → night) is baked
+// in JS from sun elevation into these four colors, so the GLSL side just
+// blends physically-shaped terms instead of encoding the color ramp itself.
+uniform vec3  uSkyZenith;     // overhead sky color
+uniform vec3  uSkyHorizon;    // sky color at the horizon (pre-Mie-halo)
+uniform vec3  uSunTint;       // color/strength of the Mie forward-scatter halo around the sun
+uniform vec3  uHazeCol;       // shared atmosphere haze — horizon glow, aerial perspective, ground fade
+uniform float uHazeAmt;       // "Sky haze" / clarity slider, 0=crisp .. 1=hazy
+
+// Moon: uMoonDir points at the moon in the sky; uMoonLightDir is the
+// direction the moon is lit from (the sun), used to place the terminator so
+// the correct crescent/gibbous shows. uMoonPhase 0=new .5=full 1=new, or <0
+// when the moon is switched off. uMoonlight is the cool night fill strength
+// (0..~1) scaled by phase + moon elevation on the JS side.
+uniform vec3  uMoonDir;
+uniform vec3  uMoonColor;
+uniform vec3  uMoonLightDir;
+uniform float uMoonPhase;
+uniform float uMoonlight;
 
 uniform vec3  uBoltA[48];
 uniform vec3  uBoltB[48];
@@ -328,13 +348,40 @@ float raySegDist(vec3 ro, vec3 rd, vec3 a, vec3 b, out float tRay) {
   return length(ro + rd * t - q);
 }
 
+// Auto-ambient: the sky-fill light clouds and the ground receive isn't a
+// separate hand-tuned color anymore — it's the sky model itself (blended
+// toward the overhead zenith tone, since that hemisphere does most of the
+// illuminating). uAmbColor is pre-normalized in JS (divided by the default
+// swatch's own luminance) so it arrives here as a neutral (1,1,1)-ish
+// tint/strength multiplier at its default value, and old share links that
+// baked in a strong hand-picked ambient color still push the look the same
+// relative direction they used to.
+vec3 ambientFill() {
+  return mix(uSkyZenith, uHazeCol, 0.35) * uAmbColor;
+}
+
 vec3 skyColor(vec3 rd) {
   float h = clamp(rd.y, 0.0, 1.0);
-  vec3 horizon = uAmbColor * 0.28 + uFlashAmb * 0.8;
-  vec3 zenith  = uAmbColor * 0.06 + uFlashAmb * 0.4;
-  vec3 col = mix(horizon, zenith, pow(h, 0.50));
+  // Rayleigh term: optical path lengthens toward the horizon, so it's where
+  // most of the scattered blue (or, at low sun, the reddened haze) piles up.
+  // pow(.,0.45) keeps the band near the horizon narrow-but-soft, matching a
+  // real "thick blue near the ground, clean color overhead" gradient.
+  float ray = pow(1.0 - h, 1.8);
+  vec3 col = mix(uSkyZenith, uSkyHorizon, ray);
+
+  // Mie term: a forward-scatter halo hugging the sun, widest and warmest
+  // (reddest) when the sun sits low — uSunTint already carries that color
+  // shift from the JS-side elevation model, so here it's just shape.
   float sd = max(dot(rd, uSunDir), 0.0);
-  col += uSunColor * (0.22 * pow(sd, 6.0) + 3.0 * pow(sd, 800.0));
+  float halo = 0.10 * pow(sd, 4.0) + 0.85 * pow(sd, 40.0) + 3.2 * pow(sd, 900.0);
+  col += uSunTint * halo;
+
+  // Haze bleeds the shared atmosphere color into the low sky, tying it to
+  // the ground/cloud haze so the whole scene reads as one atmosphere.
+  col = mix(col, uHazeCol, ray * ray * uHazeAmt * 0.6);
+
+  col += uFlashAmb * mix(0.8, 0.4, h);
+
   // Stars, visible only where the sky is dark and above the horizon.
   float lum = dot(col, vec3(0.3, 0.5, 0.2));
   float starVis = clamp(1.0 - lum * 9.0, 0.0, 1.0) * smoothstep(0.02, 0.18, rd.y);
@@ -348,6 +395,55 @@ vec3 skyColor(vec3 rd) {
       col += vec3(0.72, 0.78, 0.95) * b * b * 0.45 * tw * starVis;
     }
   }
+  // Moon disc: a small sphere on the sky sphere. We reconstruct a hemisphere
+  // normal across the disc and light it by uMoonLightDir (the sun) so the
+  // terminator is a real curved great-circle — crescent through gibbous — and
+  // add a soft limb + faint corona. uMoonPhase < 0 means the moon is off.
+  if (uMoonPhase >= 0.0) {
+    float md = dot(rd, uMoonDir);
+    // Angular radius of the disc (~a bit larger than real, for presence).
+    const float MR = 0.986;            // cos of the disc's angular radius
+    if (md > MR - 0.02) {
+      // Build a disc-local frame: mu/mv span the plane facing the viewer.
+      vec3 mu = normalize(cross(uMoonDir, vec3(0.0, 1.0, 0.0)) + vec3(1e-4));
+      vec3 mv = cross(uMoonDir, mu);
+      // Position on the disc, normalized so the rim sits at |d|=1.
+      float ang = acos(clamp(md, -1.0, 1.0));
+      float rimAng = acos(MR);
+      vec2 d = vec2(dot(rd, mu), dot(rd, mv)) / max(sin(rimAng), 1e-3);
+      float rr = length(d);
+      if (rr <= 1.15) {
+        // Hemisphere normal of the sphere facing us at this disc point. The
+        // visible near hemisphere bulges toward the viewer, i.e. around
+        // -uMoonDir, so a full moon (sun behind the viewer, sun dir ≈
+        // -uMoonDir) lights this whole face — the correct terminator sweep.
+        float z = sqrt(max(1.0 - min(rr * rr, 1.0), 0.0));
+        vec3 n = normalize(mu * d.x + mv * d.y - uMoonDir * z);
+        // Lit fraction: Lambert against the sun direction. The dot product
+        // sweeps the terminator across the disc as the phase (sun-moon
+        // geometry) changes, giving the correct curved crescent/gibbous.
+        float lit = clamp(dot(n, uMoonLightDir) * 0.5 + 0.5, 0.0, 1.0);
+        lit = smoothstep(0.46, 0.54, lit);
+        // Subtle maria mottling + limb darkening on the lit face.
+        float maria = 0.82 + 0.18 * vnoise(n * 6.0 + uSeedOffset);
+        float limb = mix(1.0, 0.72, smoothstep(0.55, 1.0, rr));
+        vec3 face = uMoonColor * (0.05 + 0.95 * lit) * maria * limb;
+        // Soft anti-aliased disc edge.
+        float disc = 1.0 - smoothstep(0.985, 1.02, rr);
+        // Earthshine: the dark limb stays faintly visible near full-ish phase.
+        float earth = (1.0 - lit) * (1.0 - abs(uMoonPhase - 0.5) * 2.0) * 0.05;
+        face += uMoonColor * earth;
+        col = mix(col, face, disc);
+        // Faint corona / halo bleeding just outside the disc.
+        float corona = exp(-(rr - 1.0) * 9.0) * (1.0 - disc) * 0.10;
+        col += uMoonColor * corona * (0.4 + 0.6 * (1.0 - abs(uMoonPhase - 0.5) * 2.0));
+      }
+    }
+    // Wider, very soft glow around the moon regardless of exact disc math.
+    float glow = pow(max(md, 0.0), 220.0);
+    col += uMoonColor * glow * 0.06 * (1.0 - abs(uMoonPhase - 0.5) * 2.0);
+  }
+
   // High, streaky cirrus sheet drifting with the wind.
   if (uCirrus > 0.001 && rd.y > 0.015) {
     vec2 cp = rd.xz / rd.y * 7.0;
@@ -358,7 +454,7 @@ vec3 skyColor(vec3 rd) {
     float cov = smoothstep(thr, thr + 0.30, n) * uCirrus;
     float fade = smoothstep(0.015, 0.10, rd.y);
     float sd2 = max(dot(rd, uSunDir), 0.0);
-    vec3 cirCol = uAmbColor * 0.5 + uSunColor * (0.06 + 0.45 * pow(sd2, 5.0)) + uFlashAmb * 0.7;
+    vec3 cirCol = uSkyHorizon * 0.6 + uSunTint * (0.10 + 0.6 * pow(sd2, 5.0)) + uFlashAmb * 0.7;
     col = mix(col, cirCol, cov * fade * 0.85);
   }
   // Low, dark background cloud bank around the horizon.
@@ -368,7 +464,7 @@ vec3 skyColor(vec3 rd) {
     float horiz = 1.0 - smoothstep(0.0, 0.38, max(rd.y, 0.0));
     float thr = 1.30 - uBgClouds * 0.90 - horiz * 0.35;
     float cov = smoothstep(thr, thr + 0.25, n);
-    vec3 bankCol = uAmbColor * (0.10 + 0.20 * n) + uFlashAmb * 0.5;
+    vec3 bankCol = uHazeCol * (0.35 + 0.35 * n) + uFlashAmb * 0.5;
     col = mix(col, bankCol, cov * (1.0 - smoothstep(0.08, 0.42, max(rd.y, 0.0))));
   }
   return col;
@@ -377,7 +473,8 @@ vec3 skyColor(vec3 rd) {
 vec3 groundColor(vec3 pos, float t) {
   vec3 alb = vec3(0.040, 0.046, 0.038);
   alb *= 0.6 + 0.7 * vnoise(vec3(pos.x * 1.3, 0.0, pos.z * 1.3));
-  vec3 col = alb * (uAmbColor * 0.5 + uSunColor * max(uSunDir.y, 0.0) * 0.4 + uFlashAmb * 2.0);
+  vec3 col = alb * (ambientFill() * 0.5 + uSunColor * max(uSunDir.y, 0.0) * 0.4
+                    + uMoonColor * uMoonlight * max(uMoonDir.y, 0.0) * 0.5 + uFlashAmb * 2.0);
   for (int i = 0; i < 3; i++) {
     float I = uFlashPos[i].w;
     if (I > 0.002) {
@@ -387,7 +484,7 @@ vec3 groundColor(vec3 pos, float t) {
       col += alb * uFlashColor[i] * I * ndl * 4.0 / (1.0 + d2 * 0.4);
     }
   }
-  vec3 horizon = uAmbColor * 0.28 + uFlashAmb * 0.8;
+  vec3 horizon = uHazeCol * 0.85 + uFlashAmb * 0.8;
   return mix(col, horizon, 1.0 - exp(-t * 0.055));
 }
 
@@ -459,9 +556,25 @@ void main() {
           under *= 1.0 - smoothstep(CLOUD_BASE - 0.30, CLOUD_BASE + 0.25, pos.y);
           vis *= mix(1.0, 0.12, under);
         }
-        vec3 S = uSunColor * 4.0 * vis * (ph * 1.5 + 0.05);
+        // Gate direct sun by its elevation so it stops lighting the clouds
+        // once it dips below the horizon — otherwise a night-side sun (deep
+        // negative elevation on the day/night clock) would keep the cloud
+        // tops sunlit at midnight. Below the horizon, moonlight takes over.
+        float sunUp = smoothstep(-0.09, 0.02, uSunDir.y);
+        vec3 S = uSunColor * 4.0 * vis * (ph * 1.5 + 0.05) * sunUp;
         float hn = clamp((pos.y - CLOUD_BASE) / 9.0, 0.0, 1.0);
-        S += uAmbColor * (0.3 + 0.7 * hn) * 0.9 * mix(1.0, 0.55, under) + uFlashAmb * 0.5;
+        S += ambientFill() * (0.3 + 0.7 * hn) * 0.9 * mix(1.0, 0.55, under) + uFlashAmb * 0.5;
+        // Moonlight: the same directional shadow-march as the sun, but cool
+        // and dim, so cloud tops facing the moon are faintly rim-lit and cast
+        // soft self-shadows — this is what keeps a moonlit night from being a
+        // flat black void. Strength (uMoonlight) already folds in phase and
+        // moon elevation on the JS side.
+        if (uMoonlight > 0.001) {
+          float mvis = lightVisibility(pos, uMoonDir, 0.14, uLightSteps);
+          mvis *= mix(1.0, 0.25, under);
+          float mph = phaseFn(dot(rd, uMoonDir));
+          S += uMoonColor * uMoonlight * mvis * (mph * 1.4 + 0.12) * 3.2;
+        }
         for (int j = 0; j < 3; j++) {
           float I = uFlashPos[j].w;
           if (I > 0.002) {
@@ -487,10 +600,12 @@ void main() {
   }
   if (boltSnapT < 0.0) boltSnapT = T;
 
-  // Aerial perspective: fade distant cloud detail toward the horizon haze.
+  // Aerial perspective: fade distant cloud detail toward the shared
+  // atmosphere haze color, strengthened by the "Sky haze" clarity slider so
+  // hazier air swallows distant cloud detail sooner.
   if (wsum > 0.0001) {
-    float f = 1.0 - exp(-(tsum / wsum) * 0.035);
-    vec3 haze = uAmbColor * 0.30 + uFlashAmb;
+    float f = 1.0 - exp(-(tsum / wsum) * (0.025 + 0.03 * uHazeAmt));
+    vec3 haze = uHazeCol * 0.9 + uFlashAmb;
     acc = mix(acc, haze * (1.0 - T), f * 0.85);
   }
 

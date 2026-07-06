@@ -1,57 +1,142 @@
 'use strict';
-// Procedural sound engine for the thunderstorm — pure Web Audio, no assets.
-// Everything is synthesized from one shared noise buffer: continuous beds
-// (rain hiss, gusting wind, low ambient rumble) plus distance-aware thunder
-// one-shots synced to the lightning scheduler. main.js pushes state in via
-// update()/thunder(); no audio nodes leak out of this module.
+// Procedural spatial sound engine for the thunderstorm — pure Web Audio, no
+// assets. Vanilla-JS port of spatial-thunder-sound-engine's AudioEngine.ts
+// with its auto-strike scheduler and radar-coordinate model removed: the SIM
+// owns all lightning timing and positions, and this module only reacts to
+// main.js calls (update() per frame, thunder() per strike).
+//
+// Beds (looping pink noise): rain through a lowpass that tracks intensity,
+// plus a randomized pitter-patter drop generator; wind through a resonant
+// bandpass howled by two detuned gust LFOs; and a deep lowpassed ambient
+// storm-presence rumble carried over from the previous sim engine.
+//
+// Thunder one-shots are HRTF-panned from the flash bearing: an instant
+// electrostatic fizz at flash time, then — after a compressed distance delay
+// scaled by playback speed — a waveshaped shattering crack, a fluttering
+// "tearing canvas" peal with staggered branch micro-claps, and layered
+// dual-path bass rumbles (pure sub-bass + saturated low-mid harmonics that
+// stay audible on small speakers). Every scheduled timer, interval and node
+// is tracked so disable()/suspendForHidden() cancel cleanly with no leaks.
 window.StormAudio = (function () {
   let ctx = null;
   let enabled = false;
-  let master, comp, bedGain;
-  let noiseBuf, irBuf;
-  const beds = {};   // rain, rainBody, wind: { gain, filter? } — smoothed each frame
   let masterVol = 0.7;
 
-  function makeNoiseBuffer(seconds) {
-    const len = Math.floor(ctx.sampleRate * seconds);
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-    return buf;
+  // Buses
+  let master = null, comp = null;
+  let rainGain = null, windGain = null, thunderGain = null, ambientGain = null;
+
+  // Bed nodes touched per frame by update()
+  let rainFilter = null;
+  let windLfo1 = null, windLfo2 = null, windLfo1Gain = null, windLfo2Gain = null;
+
+  // Shared procedural noise buffers
+  let pinkNoiseBuffer = null, whiteNoiseBuffer = null;
+
+  const SPATIAL_MODE = 'HRTF';
+  // Last bed levels from update(); rain also drives the drop generator.
+  const levels = { rain: 0, wind: 0, ambient: 0 };
+
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+  function running() { return enabled && ctx && ctx.state === 'running'; }
+
+  // ---------- One-shot lifecycle tracking ----------
+  // Each thunder strike / rain drop registers its nodes, drift intervals and
+  // a cleanup timeout here, so hiding the tab or disabling sound tears down
+  // everything scheduled — no leaked timers, no burst of stale claps later.
+  const oneShots = new Set();
+  let dropTimer = 0;
+
+  function makeOneShot() {
+    const entry = {
+      nodes: [], intervals: [], tid: 0,
+      cancel() {
+        clearTimeout(entry.tid);
+        for (const id of entry.intervals) clearInterval(id);
+        for (const n of entry.nodes) {
+          if (typeof n.stop === 'function') { try { n.stop(0); } catch (e) {} }
+          try { n.disconnect(); } catch (e) {}
+        }
+        oneShots.delete(entry);
+      },
+      arm(lifeMs) { entry.tid = setTimeout(() => entry.cancel(), lifeMs); },
+    };
+    oneShots.add(entry);
+    return entry;
+  }
+  function cancelOneShots() {
+    for (const e of Array.from(oneShots)) e.cancel();
   }
 
-  // Reverb impulse response: stereo decaying noise, darkening over the tail —
-  // reads as open-sky distance rather than a room.
-  function makeImpulse(seconds, decay) {
-    const len = Math.floor(ctx.sampleRate * seconds);
-    const buf = ctx.createBuffer(2, len, ctx.sampleRate);
-    for (let c = 0; c < 2; c++) {
-      const d = buf.getChannelData(c);
-      let lp = 0;
-      for (let i = 0; i < len; i++) {
-        const t = i / len;
-        // Progressive lowpass: late reflections are duller than early ones.
-        const k = 0.02 + 0.25 * (1 - t);
-        lp += k * ((Math.random() * 2 - 1) - lp);
-        d[i] = lp * Math.pow(1 - t, decay) * 3.0;
-      }
+  // ---------- Procedural noise ----------
+  function makeNoiseBuffers() {
+    const sampleRate = ctx.sampleRate;
+    const numSamples = Math.floor(sampleRate * 5.0);
+
+    // Pink noise (Kellet refined filter) — rich organic rain/wind/rumble.
+    pinkNoiseBuffer = ctx.createBuffer(1, numSamples, sampleRate);
+    const pink = pinkNoiseBuffer.getChannelData(0);
+    let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+    for (let i = 0; i < numSamples; i++) {
+      const white = Math.random() * 2 - 1;
+      b0 = 0.99886 * b0 + white * 0.0555179;
+      b1 = 0.99332 * b1 + white * 0.0750759;
+      b2 = 0.96900 * b2 + white * 0.1538520;
+      b3 = 0.86650 * b3 + white * 0.3104856;
+      b4 = 0.55000 * b4 + white * 0.5329522;
+      b5 = -0.7616 * b5 - white * 0.0168980;
+      pink[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
+      b6 = white * 0.115926;
     }
-    return buf;
+
+    whiteNoiseBuffer = ctx.createBuffer(1, numSamples, sampleRate);
+    const wht = whiteNoiseBuffer.getChannelData(0);
+    for (let i = 0; i < numSamples; i++) wht[i] = Math.random() * 2 - 1;
   }
 
-  function loopedNoise() {
-    const src = ctx.createBufferSource();
-    src.buffer = noiseBuf;
-    src.loop = true;
-    // Random start offsets would need separate buffers; instead detune each
-    // loop slightly so the beds never phase-lock audibly.
-    src.playbackRate.value = 0.97 + Math.random() * 0.06;
-    return src;
+  // Waveshaper curves for the crack/micro-clap/harmonic saturation. Cached:
+  // only three amounts are used and each curve is a 44100-float array.
+  const curveCache = new Map();
+  function distortionCurve(amount) {
+    let curve = curveCache.get(amount);
+    if (curve) return curve;
+    const n = 44100;
+    curve = new Float32Array(n);
+    const deg = Math.PI / 180;
+    for (let i = 0; i < n; ++i) {
+      const x = (i * 2) / n - 1;
+      curve[i] = ((3 + amount) * x * 20 * deg) / (Math.PI + amount * Math.abs(x));
+    }
+    curveCache.set(amount, curve);
+    return curve;
   }
 
+  // HRTF panner used by all thunder layers. Listener stays at the origin
+  // facing -z; positions are in meters. refDistance 1500 = full volume at
+  // 1.5 km or closer, inverse rolloff beyond.
+  function makePanner(px, py, pz, t) {
+    const p = ctx.createPanner();
+    p.panningModel = SPATIAL_MODE;
+    p.distanceModel = 'inverse';
+    p.refDistance = 1500;
+    p.rolloffFactor = 1.0;
+    if (p.positionX && typeof p.positionX.setValueAtTime === 'function') {
+      p.positionX.setValueAtTime(px, t);
+      p.positionY.setValueAtTime(py, t);
+      p.positionZ.setValueAtTime(pz, t);
+    } else {
+      p.setPosition(px, py, pz);
+    }
+    return p;
+  }
+
+  // ---------- Audio graph ----------
   function buildGraph() {
+    // Soft safety compressor kept from the previous sim engine — the crack
+    // plus 5-10 stacked rumbles can sum hot on close strikes.
     master = ctx.createGain();
     master.gain.value = masterVol;
+    master.connect(ctx.destination);
     comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -18;
     comp.knee.value = 12;
@@ -59,221 +144,462 @@ window.StormAudio = (function () {
     comp.attack.value = 0.003;
     comp.release.value = 0.3;
     comp.connect(master);
-    master.connect(ctx.destination);
 
-    bedGain = ctx.createGain();
-    bedGain.gain.value = 1;
-    bedGain.connect(comp);
+    rainGain = ctx.createGain(); rainGain.gain.value = 0; rainGain.connect(comp);
+    windGain = ctx.createGain(); windGain.gain.value = 0; windGain.connect(comp);
+    thunderGain = ctx.createGain(); thunderGain.gain.value = 0.8; thunderGain.connect(comp);
+    ambientGain = ctx.createGain(); ambientGain.gain.value = 0; ambientGain.connect(comp);
 
-    noiseBuf = makeNoiseBuffer(3.1);
-    irBuf = makeImpulse(3.5, 2.2);
+    // Rain bed: pink noise loop through a lowpass whose cutoff tracks rain
+    // intensity (700 Hz soft shower … 3500 Hz torrential).
+    rainFilter = ctx.createBiquadFilter();
+    rainFilter.type = 'lowpass';
+    rainFilter.frequency.value = 1500;
+    rainFilter.connect(rainGain);
+    const rainSrc = ctx.createBufferSource();
+    rainSrc.buffer = pinkNoiseBuffer;
+    rainSrc.loop = true;
+    rainSrc.connect(rainFilter);
+    rainSrc.start();
 
-    // --- Rain: bright hiss band + a lower body band in parallel.
-    {
-      const g = ctx.createGain(); g.gain.value = 0;
-      const hiss = ctx.createBiquadFilter();
-      hiss.type = 'bandpass'; hiss.frequency.value = 3200; hiss.Q.value = 0.45;
-      const src = loopedNoise();
-      src.connect(hiss); hiss.connect(g); g.connect(bedGain);
-      src.start();
-      // Slow gain shimmer so the hiss doesn't sound like a frozen loop.
-      const lfo = ctx.createOscillator(); lfo.frequency.value = 0.13;
-      const lfoG = ctx.createGain(); lfoG.gain.value = 0.12;
-      lfo.connect(lfoG); lfoG.connect(g.gain); lfo.start();
-      beds.rain = { gain: g };
+    // Wind bed: pink noise through a high-Q resonant bandpass that howls;
+    // two out-of-sync LFOs sweep its center frequency so the gusts rise,
+    // fall and shiver non-periodically.
+    const windFilter = ctx.createBiquadFilter();
+    windFilter.type = 'bandpass';
+    windFilter.Q.value = 4.0;
+    windFilter.frequency.value = 450;
+    windFilter.connect(windGain);
+    const windSrc = ctx.createBufferSource();
+    windSrc.buffer = pinkNoiseBuffer;
+    windSrc.loop = true;
+    windSrc.playbackRate.value = 1.045; // detune vs. the rain loop
+    windSrc.connect(windFilter);
+    windSrc.start();
 
-      const g2 = ctx.createGain(); g2.gain.value = 0;
-      const body = ctx.createBiquadFilter();
-      body.type = 'bandpass'; body.frequency.value = 900; body.Q.value = 0.6;
-      const src2 = loopedNoise();
-      src2.connect(body); body.connect(g2); g2.connect(bedGain);
-      src2.start();
-      beds.rainBody = { gain: g2 };
-    }
+    windLfo1 = ctx.createOscillator();                 // slow rising/falling gusts
+    windLfo1.frequency.value = 0.04;
+    windLfo1Gain = ctx.createGain();
+    windLfo1Gain.gain.value = 180;
+    windLfo1.connect(windLfo1Gain);
+    windLfo1Gain.connect(windFilter.frequency);
+    windLfo1.start();
+    windLfo2 = ctx.createOscillator();                 // faster turbulent shiver
+    windLfo2.frequency.value = 0.18;
+    windLfo2Gain = ctx.createGain();
+    windLfo2Gain.gain.value = 70;
+    windLfo2.connect(windLfo2Gain);
+    windLfo2Gain.connect(windFilter.frequency);
+    windLfo2.start();
 
-    // --- Wind: two detuned lowpassed layers, cutoffs gusting on slow LFOs.
-    {
-      const g = ctx.createGain(); g.gain.value = 0;
-      beds.wind = { gain: g, filters: [] };
-      for (let i = 0; i < 2; i++) {
-        const lp = ctx.createBiquadFilter();
-        lp.type = 'lowpass'; lp.frequency.value = 350; lp.Q.value = 0.8;
-        const pan = ctx.createStereoPanner();
-        pan.pan.value = i === 0 ? -0.4 : 0.4;
-        const src = loopedNoise();
-        src.playbackRate.value *= i === 0 ? 0.92 : 1.05;
-        src.connect(lp); lp.connect(pan); pan.connect(g);
-        src.start();
-        // Gust LFO: modulates the cutoff so the wind swells and howls.
-        const lfo = ctx.createOscillator();
-        lfo.frequency.value = 0.05 + i * 0.023;
-        const lfoG = ctx.createGain(); lfoG.gain.value = 160;
-        lfo.connect(lfoG); lfoG.connect(lp.frequency); lfo.start();
-        beds.wind.filters.push(lp);
-      }
-      g.connect(bedGain);
-    }
-
-    // --- Ambient rumble: deep lowpassed noise, the felt presence of a storm.
-    {
-      const g = ctx.createGain(); g.gain.value = 0;
-      const lp = ctx.createBiquadFilter();
-      lp.type = 'lowpass'; lp.frequency.value = 95; lp.Q.value = 1.1;
-      const src = loopedNoise();
-      src.connect(lp); lp.connect(g); g.connect(bedGain);
-      src.start();
-      const lfo = ctx.createOscillator(); lfo.frequency.value = 0.07;
-      const lfoG = ctx.createGain(); lfoG.gain.value = 0.25;
-      lfo.connect(lfoG); lfoG.connect(g.gain); lfo.start();
-      beds.ambient = { gain: g };
-    }
+    // Ambient storm-presence bed carried over from the previous engine (the
+    // ported one has no equivalent): deep lowpassed noise with a slow
+    // breathing LFO, driven by update({ambient}).
+    const ambFilter = ctx.createBiquadFilter();
+    ambFilter.type = 'lowpass';
+    ambFilter.frequency.value = 95;
+    ambFilter.Q.value = 1.1;
+    ambFilter.connect(ambientGain);
+    const ambSrc = ctx.createBufferSource();
+    ambSrc.buffer = pinkNoiseBuffer;
+    ambSrc.loop = true;
+    ambSrc.playbackRate.value = 0.86;
+    ambSrc.connect(ambFilter);
+    ambSrc.start();
+    const ambLfo = ctx.createOscillator();
+    ambLfo.frequency.value = 0.07;
+    const ambLfoG = ctx.createGain();
+    ambLfoG.gain.value = 0.07;
+    ambLfo.connect(ambLfoG);
+    ambLfoG.connect(ambientGain.gain);
+    ambLfo.start();
   }
+
+  // ---------- Rain drop generator ----------
+  // Tiny high-passed white-noise ticks panned in a small sphere around the
+  // head. A single chained timeout, gated on running() and torn down by
+  // stopDrops() so a hidden tab never keeps scheduling.
+  function startDrops() {
+    if (dropTimer) return;
+    const tick = () => {
+      if (!running()) { dropTimer = 0; return; }
+      const intensity = levels.rain;
+      if (intensity > 0.05) {
+        scheduleRainDrop(intensity);
+        const base = 100 - intensity * 80; // heavier rain → denser drops
+        dropTimer = setTimeout(tick, base + Math.random() * base);
+      } else {
+        dropTimer = setTimeout(tick, 500); // idle poll while it's dry
+      }
+    };
+    dropTimer = setTimeout(tick, 100);
+  }
+  function stopDrops() {
+    clearTimeout(dropTimer);
+    dropTimer = 0;
+  }
+
+  function scheduleRainDrop(intensity) {
+    const t = ctx.currentTime;
+    const entry = makeOneShot();
+
+    const src = ctx.createBufferSource();
+    src.buffer = whiteNoiseBuffer;
+
+    const g = ctx.createGain();
+    const peak = 0.01 + (Math.random() * 0.05) * intensity;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + 0.001);
+    const decay = 0.004 + Math.random() * 0.02;
+    g.gain.exponentialRampToValueAtTime(0.0001, t + decay);
+
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.frequency.setValueAtTime(4000 + Math.random() * 3000, t);
+
+    // A drop lands somewhere very close, slightly above the listener.
+    const panner = ctx.createPanner();
+    panner.panningModel = SPATIAL_MODE;
+    panner.distanceModel = 'inverse';
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 0.5 + Math.random() * 3.5;
+    const dx = Math.cos(angle) * radius;
+    const dz = Math.sin(angle) * radius;
+    const dy = 0.2 + Math.random() * 2.5;
+    if (panner.positionX && typeof panner.positionX.setValueAtTime === 'function') {
+      panner.positionX.setValueAtTime(dx, t);
+      panner.positionY.setValueAtTime(dy, t);
+      panner.positionZ.setValueAtTime(dz, t);
+    } else {
+      panner.setPosition(dx, dy, dz);
+    }
+
+    src.connect(hp); hp.connect(g); g.connect(panner); panner.connect(rainGain);
+    src.start(t);
+    src.stop(t + decay + 0.05);
+
+    entry.nodes.push(src, hp, g, panner);
+    entry.arm((decay + 0.15) * 1000);
+  }
+
+  // ---------- Thunder ----------
+  // Instant subtle electrostatic "fizz" at the moment of the visual flash,
+  // before the physical sound wave arrives.
+  function scheduleFlashCrack(intensity, px, py, pz) {
+    const t = ctx.currentTime;
+    const entry = makeOneShot();
+    const panner = makePanner(px, py, pz, t);
+    panner.connect(thunderGain);
+
+    const spark = ctx.createBufferSource();
+    spark.buffer = whiteNoiseBuffer;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.04 * intensity, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(5000 + Math.random() * 2000, t);
+    bp.Q.setValueAtTime(4.0, t);
+
+    spark.connect(bp); bp.connect(g); g.connect(panner);
+    spark.start(t);
+    spark.stop(t + 0.1);
+
+    entry.nodes.push(spark, bp, g, panner);
+    entry.arm(300);
+  }
+
+  // The main event: shattering crack + tearing-canvas fluttering peal with
+  // staggered branch micro-claps + layered dual-path bass rumbles, all fed
+  // through one HRTF panner per strike. dist is in meters.
+  function scheduleThunderSynth(o) {
+    const { dist, intensity, isCG, delay, px, py, pz } = o;
+    const strikeTime = ctx.currentTime + delay;
+    const entry = makeOneShot();
+    let end = 0; // latest layer end, relative to strikeTime
+
+    const panner = makePanner(px, py, pz, strikeTime);
+    panner.connect(thunderGain);
+    entry.nodes.push(panner);
+
+    // -- LAYER A: primary shattering crack (close/medium strikes < 6 km).
+    // Instantaneous high-frequency air-splitting crunch; CG strikes hit the
+    // ground nearby and get the full crack, in-cloud flashes only a hint.
+    if (dist < 6000) {
+      const distanceFactor = Math.max(0, 1 - dist / 6000);
+      const crackVolume = 0.9 * intensity * Math.pow(distanceFactor, 1.5) * (isCG ? 1.0 : 0.35);
+      if (crackVolume > 0.01) {
+        const src = ctx.createBufferSource();
+        src.buffer = whiteNoiseBuffer;
+
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, strikeTime);
+        g.gain.linearRampToValueAtTime(crackVolume, strikeTime + 0.005);
+        const crackDecay = 0.06 + intensity * 0.18;
+        g.gain.exponentialRampToValueAtTime(0.0001, strikeTime + crackDecay);
+
+        const shaper = ctx.createWaveShaper();
+        shaper.curve = distortionCurve(80);
+        shaper.oversample = '4x';
+
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(Math.max(450, 2500 - dist / 2.5), strikeTime);
+        bp.Q.setValueAtTime(2.5, strikeTime);
+
+        src.connect(shaper); shaper.connect(bp); bp.connect(g); g.connect(panner);
+        src.start(strikeTime);
+        src.stop(strikeTime + crackDecay + 0.1);
+        entry.nodes.push(src, shaper, bp, g);
+        end = Math.max(end, crackDecay + 0.1);
+      }
+    }
+
+    // -- LAYER B: tearing canvas / fluttering crackle peal, plus staggered
+    // branch-discharge micro-claps ("machine gun" pops along the channel).
+    const tearVolume = 0.65 * intensity * Math.max(0, 1 - dist / 9500);
+    if (tearVolume > 0.01) {
+      const tearSrc = ctx.createBufferSource();
+      tearSrc.buffer = whiteNoiseBuffer;
+      tearSrc.loop = true;
+
+      const tearGainNode = ctx.createGain();
+      const tearDuration = 1.0 + intensity * 2.5 + dist / 2500;
+      tearGainNode.gain.setValueAtTime(0, strikeTime);
+      tearGainNode.gain.linearRampToValueAtTime(tearVolume, strikeTime + 0.1);
+      tearGainNode.gain.exponentialRampToValueAtTime(0.0001, strikeTime + tearDuration);
+
+      // Bandpass isolates the tearing frequencies; the sweep down over time
+      // simulates acoustic propagation.
+      const tearFilter = ctx.createBiquadFilter();
+      tearFilter.type = 'bandpass';
+      const baseTearFreq = Math.max(250, 1200 - dist / 5);
+      tearFilter.frequency.setValueAtTime(baseTearFreq, strikeTime);
+      tearFilter.frequency.exponentialRampToValueAtTime(baseTearFreq * 0.5, strikeTime + tearDuration);
+      tearFilter.Q.setValueAtTime(2.0, strikeTime);
+
+      // Fast triangle LFO (18-32 Hz) amplitude-modulates the tear for the
+      // shivering flutter.
+      const flutterLfo = ctx.createOscillator();
+      flutterLfo.type = 'triangle';
+      flutterLfo.frequency.setValueAtTime(18 + Math.random() * 14, strikeTime);
+      const flutterDepth = ctx.createGain();
+      flutterDepth.gain.setValueAtTime(0.35, strikeTime);
+      const vca = ctx.createGain();
+      vca.gain.setValueAtTime(0.5, strikeTime);
+      flutterLfo.connect(flutterDepth);
+      flutterDepth.connect(vca.gain);
+
+      tearSrc.connect(tearFilter); tearFilter.connect(vca);
+      vca.connect(tearGainNode); tearGainNode.connect(panner);
+      tearSrc.start(strikeTime);
+      flutterLfo.start(strikeTime);
+      tearSrc.stop(strikeTime + tearDuration + 0.1);
+      flutterLfo.stop(strikeTime + tearDuration + 0.1);
+      entry.nodes.push(tearSrc, tearFilter, vca, tearGainNode, flutterLfo, flutterDepth);
+      end = Math.max(end, tearDuration + 0.1);
+
+      const numMicroClaps = 3 + Math.round(intensity * 4);
+      for (let j = 0; j < numMicroClaps; j++) {
+        const clapStagger = j * 0.18 + (Math.random() * 0.15) * (1 + dist / 4000);
+        const clapStart = strikeTime + clapStagger;
+
+        const src = ctx.createBufferSource();
+        src.buffer = whiteNoiseBuffer;
+
+        const g = ctx.createGain();
+        const microVol = tearVolume * (0.6 + Math.random() * 0.6) * (1 - (j / numMicroClaps) * 0.4);
+        g.gain.setValueAtTime(0, clapStart);
+        g.gain.linearRampToValueAtTime(microVol, clapStart + 0.003);
+        const microDecay = 0.03 + Math.random() * 0.07;
+        g.gain.exponentialRampToValueAtTime(0.0001, clapStart + microDecay);
+
+        const shaper = ctx.createWaveShaper();
+        shaper.curve = distortionCurve(45);
+
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(baseTearFreq * (0.8 + Math.random() * 0.5), clapStart);
+        bp.Q.setValueAtTime(3.0, clapStart);
+
+        src.connect(shaper); shaper.connect(bp); bp.connect(g); g.connect(panner);
+        src.start(clapStart);
+        src.stop(clapStart + microDecay + 0.1);
+        entry.nodes.push(src, shaper, bp, g);
+        end = Math.max(end, clapStagger + microDecay + 0.1);
+      }
+    }
+
+    // -- LAYER C: majestic rolling bass rumble with psychoacoustic
+    // harmonics. Each staggered rumble runs two parallel paths: pure
+    // sub-bass (headphones/subwoofers) and gently saturated low-mids that
+    // carry the weight on phone/laptop speakers.
+    const numRumbles = 5 + Math.round(intensity * 5);
+    const baseRumbleGain = (0.75 + intensity * 0.45) * Math.max(0.2, 1800 / (1800 + dist));
+
+    for (let i = 0; i < numRumbles; i++) {
+      const src = ctx.createBufferSource();
+      src.buffer = pinkNoiseBuffer;
+      src.loop = true;
+
+      const rumbleStagger = i * 0.5 + (Math.random() * 0.45) * (1 + dist / 2500);
+      const rumbleStart = strikeTime + rumbleStagger;
+      const rumbleVol = baseRumbleGain * (0.45 + Math.random() * 0.55) * (1 - (i / numRumbles) * 0.45);
+      const rumbleAttack = 0.15 + Math.random() * 0.55;
+      const rumbleDuration = 3.0 + intensity * 6.0 + Math.random() * 4.0;
+
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, rumbleStart);
+      g.gain.linearRampToValueAtTime(rumbleVol, rumbleStart + rumbleAttack);
+      g.gain.exponentialRampToValueAtTime(0.0001, rumbleStart + rumbleAttack + rumbleDuration);
+
+      // Path 1: pure sub-bass through two cascaded lowpasses.
+      const lp1 = ctx.createBiquadFilter();
+      lp1.type = 'lowpass';
+      const subCutoff = Math.max(75, 180 - dist / 35);
+      lp1.frequency.setValueAtTime(subCutoff, rumbleStart);
+      lp1.frequency.exponentialRampToValueAtTime(subCutoff * 0.6, rumbleStart + rumbleAttack + rumbleDuration);
+      lp1.Q.setValueAtTime(1.5, rumbleStart);
+      const lp2 = ctx.createBiquadFilter();
+      lp2.type = 'lowpass';
+      lp2.frequency.setValueAtTime(subCutoff * 1.3, rumbleStart);
+
+      // Path 2: warm saturated low-mids.
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = distortionCurve(35);
+      shaper.oversample = '4x';
+      const lpH = ctx.createBiquadFilter();
+      lpH.type = 'lowpass';
+      const harmonicCutoff = Math.max(160, 480 - dist / 18);
+      lpH.frequency.setValueAtTime(harmonicCutoff, rumbleStart);
+      lpH.frequency.exponentialRampToValueAtTime(harmonicCutoff * 0.65, rumbleStart + rumbleAttack + rumbleDuration);
+      lpH.Q.setValueAtTime(1.0, rumbleStart);
+
+      src.connect(lp1); lp1.connect(lp2); lp2.connect(g);
+      src.connect(shaper); shaper.connect(lpH); lpH.connect(g);
+      g.connect(panner);
+      src.start(rumbleStart);
+      src.stop(rumbleStart + rumbleAttack + rumbleDuration + 0.1);
+      entry.nodes.push(src, lp1, lp2, shaper, lpH, g);
+      end = Math.max(end, rumbleStagger + rumbleAttack + rumbleDuration + 0.1);
+
+      // Slow lateral drift, as if the echo shifts along the storm front.
+      const driftSpeed = (Math.random() - 0.5) * 60; // up to ±30 m/s
+      let curX = px;
+      const iv = setInterval(() => {
+        if (!ctx || ctx.state === 'closed' || ctx.currentTime > rumbleStart + rumbleDuration) {
+          clearInterval(iv);
+          return;
+        }
+        curX += driftSpeed * 0.2;
+        try {
+          if (panner.positionX && typeof panner.positionX.setValueAtTime === 'function') {
+            panner.positionX.setValueAtTime(curX, ctx.currentTime);
+          } else {
+            panner.setPosition(curX, py, pz);
+          }
+        } catch (e) { clearInterval(iv); }
+      }, 200);
+      entry.intervals.push(iv);
+    }
+
+    entry.arm((delay + end + 1.5) * 1000);
+  }
+
+  // ---------- Public API (unchanged from the previous engine) ----------
 
   function enable() {
     enabled = true;
     if (!ctx) {
       ctx = new (window.AudioContext || window.webkitAudioContext)();
+      makeNoiseBuffers();
       buildGraph();
     }
-    if (ctx.state !== 'running') ctx.resume();
+    if (ctx.state !== 'running') {
+      ctx.resume().then(() => { if (enabled) startDrops(); }).catch(() => {});
+    } else {
+      startDrops();
+    }
   }
+
   function disable() {
     enabled = false;
+    stopDrops();
+    cancelOneShots();
     if (ctx && ctx.state === 'running') ctx.suspend();
   }
 
   function setMaster(v) {
     masterVol = v;
-    if (master) master.gain.setTargetAtTime(v, ctx.currentTime, 0.05);
+    if (master && ctx) master.gain.setTargetAtTime(v, ctx.currentTime, 0.05);
   }
 
-  // Per-frame bed levels; values are 0..~1 and smoothed here.
-  function update(levels) {
-    if (!enabled || !ctx || ctx.state !== 'running') return;
+  // Per-frame bed levels from the sim (values 0..~1, smoothed here):
+  // rain → rainVolume + lowpass cutoff (and drop density), wind →
+  // windVolume + gust-LFO rate/depth (turbulence), ambient → presence bed.
+  function update(l) {
+    if (!running()) return;
     const t = ctx.currentTime;
-    const set = (bed, v, tc) => bed.gain.gain.setTargetAtTime(v, t, tc || 0.35);
-    set(beds.rain, levels.rain * 0.17);
-    set(beds.rainBody, levels.rain * 0.10);
-    set(beds.wind, 0.05 + levels.wind * 0.30);
-    set(beds.ambient, levels.ambient * 0.40);
-    // Wind pitch/brightness rises with strength on top of the gust LFOs.
-    for (const lp of beds.wind.filters) {
-      lp.frequency.setTargetAtTime(220 + levels.wind * 480, t, 0.8);
-    }
+    const rain = clamp(l.rain || 0, 0, 1);
+    const wind = clamp(l.wind || 0, 0, 1);
+    const amb = clamp(l.ambient || 0, 0, 1);
+    levels.rain = rain; levels.wind = wind; levels.ambient = amb;
+
+    rainGain.gain.setTargetAtTime(rain * 0.55, t, 0.35);
+    rainFilter.frequency.setTargetAtTime(700 + rain * 2800, t, 0.5);
+
+    windGain.gain.setTargetAtTime(0.03 + wind * 0.45, t, 0.35);
+    windLfo1.frequency.setTargetAtTime(0.02 + wind * 0.08, t, 1.0);
+    windLfo2.frequency.setTargetAtTime(0.10 + wind * 0.25, t, 1.0);
+    windLfo1Gain.gain.setTargetAtTime(100 + wind * 250, t, 1.0);
+    windLfo2Gain.gain.setTargetAtTime(40 + wind * 120, t, 1.0);
+
+    ambientGain.gain.setTargetAtTime(amb * 0.35, t, 0.35);
   }
 
-  // Distance-aware thunder. distance in km, energy ~0.5..2, pan -1..1.
-  // Delay is a compressed function of distance (~0.2–3 s), not the physical
-  // ~3 s/km — a 14 km storm shouldn't answer a flash 40 s later.
+  // One thunder event per sim lightning strike. distance arrives in sim
+  // world units (≈ km) and is converted to the engine's meter scale;
+  // energy → strike intensity; isCG biases the sharp crack layer; pan is
+  // the camera-relative bearing (sin of the angle); speed divides the
+  // flash→clap delay so fast-forward keeps flash and clap in sync.
   function thunder(opts) {
-    if (!enabled || !ctx || ctx.state !== 'running') return;
-    const dist = Math.min(Math.max(opts.distance, 0.3), 30);
-    const near = Math.exp(-dist / 9);            // 1 close … ~0.2 far
-    const energy = Math.min(Math.max(opts.energy || 1, 0.3), 2.5);
-    const delay = 0.2 + 2.8 * (1 - Math.exp(-dist / 12)) * (0.9 + Math.random() * 0.2);
-    const t0 = ctx.currentTime + delay / Math.max(opts.speed || 1, 0.5);
+    if (!running()) return;
+    const distKm = clamp(opts.distance || 1, 0.2, 14);
+    const dist = clamp(distKm * 1000, 200, 12000);
+    const energy = clamp(opts.energy == null ? 1 : opts.energy, 0.3, 2.5);
+    const intensity = clamp(0.25 + energy * 0.3, 0.1, 1.0);
+    const isCG = !!opts.isCG;
+    const pan = clamp(opts.pan || 0, -1, 1);
+    // Compressed distance delay kept from the sim — physical 343 m/s would
+    // answer a 12 km flash 35 s later.
+    const delay = (0.2 + 2.8 * (1 - Math.exp(-distKm / 12)) * (0.9 + Math.random() * 0.2)) /
+                  Math.max(opts.speed || 1, 0.5);
 
-    const out = ctx.createGain();
-    out.gain.value = 1;
-    const pan = ctx.createStereoPanner();
-    pan.pan.value = Math.min(Math.max(opts.pan || 0, -1), 1) * (0.35 + 0.4 * near);
-    out.connect(pan);
+    // Position: pan → azimuth in front of the listener (origin, facing -z);
+    // in-cloud flashes originate higher up than ground strikes.
+    const az = Math.asin(pan);
+    const px = Math.sin(az) * dist;
+    const pz = -Math.cos(az) * dist;
+    const py = (isCG ? 1000 : 1700) + intensity * 800;
 
-    // Dry/wet split: far thunder is nearly all reverberant wash.
-    const dry = ctx.createGain(); dry.gain.value = 0.40 + 0.60 * near;
-    const wet = ctx.createGain(); wet.gain.value = 0.35 + 0.55 * (1 - near);
-    const conv = ctx.createConvolver(); conv.buffer = irBuf;
-    pan.connect(dry); dry.connect(comp);
-    pan.connect(conv); conv.connect(wet); wet.connect(comp);
-
-    const nodes = [out, pan, dry, wet, conv];
-
-    // Generic rumble body: looping noise through a falling lowpass, with a
-    // first peak followed by randomized sub-lobes. All three thunder
-    // characters are parameterizations of this.
-    const mkRumble = (p) => {
-      const src = ctx.createBufferSource();
-      src.buffer = noiseBuf; src.loop = true;
-      src.playbackRate.value = p.rate * (0.9 + Math.random() * 0.2);
-      const lp = ctx.createBiquadFilter();
-      lp.type = 'lowpass';
-      lp.frequency.setValueAtTime(p.f0, t0);
-      lp.frequency.exponentialRampToValueAtTime(p.f1, t0 + p.dur);
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0, t0);
-      let tt = t0 + p.lead;
-      g.gain.linearRampToValueAtTime(p.amp, tt + p.att);
-      tt += p.att;
-      for (let i = 0; i < p.lobes; i++) {
-        tt += (p.dur / (p.lobes + 1)) * (0.7 + Math.random() * 0.6);
-        g.gain.linearRampToValueAtTime(p.amp * (0.25 + Math.random() * 0.2), tt);
-        const peak = p.amp * (0.4 + Math.random() * 0.5);
-        tt += 0.12 + Math.random() * 0.25;
-        g.gain.linearRampToValueAtTime(peak, tt);
-      }
-      g.gain.exponentialRampToValueAtTime(0.001, t0 + p.dur + 0.6);
-      src.connect(lp); lp.connect(g); g.connect(out);
-      src.start(t0, Math.random() * 2);
-      src.stop(t0 + p.dur + 0.8);
-      nodes.push(src, lp, g);
-      return src;
-    };
-
-    // Pick a thunder character: close/CG strikes favor the cannon boom,
-    // far ones the long horizon roll, with the tumbling roll as the default.
-    // Every parameter is randomized in a range so no two claps match.
-    const roll = Math.random();
-    let kind = 'roll';
-    if (roll < near * (opts.isCG ? 0.65 : 0.30)) kind = 'boom';
-    else if (roll > 1 - (1 - near) * 0.45) kind = 'longroll';
-
-    let main;
-    if (kind === 'boom') {
-      // Cannon boom: one huge fast peak, quick decay, plus a sub-bass drop.
-      main = mkRumble({
-        dur: 1.2 + Math.random() * 0.7, rate: 0.55,
-        f0: 150 + 160 * near, f1: 50,
-        amp: (0.9 + 0.5 * near) * energy, att: 0.04 + Math.random() * 0.03,
-        lead: 0, lobes: Math.random() < 0.5 ? 1 : 0,
-      });
-      const o = ctx.createOscillator(); o.type = 'sine';
-      o.frequency.setValueAtTime(55 + Math.random() * 14, t0);
-      o.frequency.exponentialRampToValueAtTime(34, t0 + 0.5);
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0, t0);
-      g.gain.linearRampToValueAtTime(0.6 * energy * near, t0 + 0.015);
-      g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
-      o.connect(g); g.connect(out);
-      o.start(t0); o.stop(t0 + 0.6);
-      nodes.push(o, g);
-    } else if (kind === 'longroll') {
-      // Long horizon roll: dull, slow, many soft lobes.
-      main = mkRumble({
-        dur: 3.8 + Math.random() * 2.4, rate: 0.5,
-        f0: 110 + 60 * near, f1: 38,
-        amp: (0.4 + 0.35 * near) * energy, att: 0.3 + Math.random() * 0.25,
-        lead: 0.1 + Math.random() * 0.2, lobes: 4 + Math.floor(Math.random() * 3),
-      });
-    } else {
-      // Tumbling roll: the classic mid-distance multi-lobe rumble.
-      main = mkRumble({
-        dur: 1.6 + 2.0 * (1 - near) + Math.random() * 1.2, rate: 0.6,
-        f0: 90 + 340 * near, f1: 45,
-        amp: (0.5 + 0.5 * near) * energy, att: 0.09 + Math.random() * 0.15,
-        lead: 0.02 + (1 - near) * 0.15, lobes: 2 + Math.floor(Math.random() * 3),
-      });
-    }
-    // Teardown once the reverb tail is done too.
-    main.onended = () => {
-      setTimeout(() => nodes.forEach(n => { try { n.disconnect(); } catch (e) {} }),
-                 4000);
-    };
+    scheduleFlashCrack(intensity, px, py, pz);
+    scheduleThunderSynth({ dist, intensity, isCG, delay, px, py, pz });
   }
 
   return {
     enable, disable, setMaster, update, thunder,
-    suspendForHidden() { if (ctx && ctx.state === 'running') ctx.suspend(); },
-    resumeIfEnabled() { if (enabled && ctx && ctx.state !== 'running') ctx.resume(); },
+    suspendForHidden() {
+      stopDrops();
+      cancelOneShots();
+      if (ctx && ctx.state === 'running') ctx.suspend();
+    },
+    resumeIfEnabled() {
+      if (enabled && ctx && ctx.state !== 'running') {
+        ctx.resume().then(() => { if (enabled) startDrops(); }).catch(() => {});
+      }
+    },
     get state() { return ctx ? ctx.state : 'off'; },
     get enabled() { return enabled; },
   };
