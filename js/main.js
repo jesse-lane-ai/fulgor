@@ -58,6 +58,7 @@
   const params = {
     speed: 1.0, wind: 1.0, motion: 1.0, seed: 1234,
     stage: 0.5, lifecycle: false,
+    sound: false, volume: 0.7,
     density: 1.0, coverage: 1.0, size: 1.0,
     freq: 1.0, intensity: 1.0, duration: 1.0,
     boltColor: '#eee9ff', flashColor: '#d7c9ff',
@@ -360,6 +361,26 @@
         });
       }
       this.events.push(ev);
+
+      // Thunder: one clap per lightning event, panned and delayed by where
+      // the flash is relative to the camera. Inherits the lifecycle gating
+      // (no spawn in cumulus/dissipating stages → no thunder).
+      if (params.sound && ev.lights.length) {
+        const p = ev.lights[0].pos;
+        const dx = p[0] - camera.pos[0], dz = p[2] - camera.pos[2];
+        const dist = Math.hypot(dx, p[1] - camera.pos[1], dz);
+        // Signed left/right of the view direction.
+        const ang = Math.atan2(dx, -dz) - camera.yaw;
+        let peak = 0;
+        for (const st of strikes) peak = Math.max(peak, st.p);
+        StormAudio.thunder({
+          distance: dist,
+          energy: (peak / 5) * params.intensity,
+          isCG: ev.isBolt,
+          pan: Math.sin(ang),
+          speed: params.speed,
+        });
+      }
     },
 
     update(simT) {
@@ -423,6 +444,8 @@
     canvas.classList.add('dragging');
     canvas.setPointerCapture(e.pointerId);
     if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    // A click is a user gesture — lets a suspended AudioContext start.
+    StormAudio.resumeIfEnabled();
   });
   canvas.addEventListener('pointermove', e => {
     if (!dragging) return;
@@ -492,6 +515,7 @@
   bindRange('motion', v => v.toFixed(2) + '×');
   const stageName = v => (v < 0.30 ? 'cumulus' : v < 0.62 ? 'mature' : 'dissipating');
   bindRange('stage', stageName);
+  bindRange('volume');
   bindRange('density');
   bindRange('coverage');
   bindRange('size', v => v.toFixed(2) + '×');
@@ -510,6 +534,17 @@
 
   const lifecycleEl = document.getElementById('lifecycle');
   lifecycleEl.addEventListener('change', () => { params.lifecycle = lifecycleEl.checked; });
+
+  // Audio: the toggle is a user gesture, so the AudioContext can start here.
+  const soundEl = document.getElementById('sound');
+  soundEl.addEventListener('change', () => {
+    params.sound = soundEl.checked;
+    if (params.sound) { StormAudio.enable(); StormAudio.setMaster(params.volume); }
+    else StormAudio.disable();
+  });
+  document.getElementById('volume').addEventListener('input', () => {
+    if (params.sound) StormAudio.setMaster(params.volume);
+  });
 
   const camLockEl = document.getElementById('camLock');
   camLockEl.addEventListener('change', () => { camera.lock = camLockEl.checked; });
@@ -658,6 +693,23 @@
     updateTowers(simT);
     lightning.update(simT);
 
+    // Push bed levels to the sound engine: rain hiss tracks the (stage-scaled)
+    // core strength and how close the camera is to it; wind tracks the slider;
+    // the ambient rumble is the storm's low-end presence, fading as it decays.
+    if (params.sound) {
+      const drx = live.rain[0] - camera.pos[0], drz = live.rain[1] - camera.pos[2];
+      const rainDist = Math.hypot(drx, drz);
+      const rainProx = Math.exp(-Math.max(rainDist - live.rain[2], 0) / 10);
+      const m = live.towers.length ? live.towers[0] : storm.towers[0];
+      const stormDist = Math.hypot(m.x - camera.pos[0], m.z - camera.pos[2]);
+      const stormProx = Math.exp(-Math.max(stormDist - m.r, 0) / 14);
+      StormAudio.update({
+        rain: Math.min(live.rain[3], 1.2) * rainProx,
+        wind: Math.min(params.wind / 3, 1),
+        ambient: (1 - live.stageFx.decay) * live.stageFx.grow * stormProx,
+      });
+    }
+
     moveCamera(dt);
     if (camera.lock) {
       const t = lockTarget();
@@ -751,10 +803,15 @@
     if (document.hidden) setTimeout(loop, 250);
     else requestAnimationFrame(loop);
   }
-  document.addEventListener('visibilitychange', scheduleNext);
+  document.addEventListener('visibilitychange', () => {
+    // Keep the hidden-tab capture workflow silent.
+    if (document.hidden) StormAudio.suspendForHidden();
+    else StormAudio.resumeIfEnabled();
+    scheduleNext();
+  });
   scheduleNext();
 
   // Debug/automation hook.
   window.__ts = { params, camera, lightning, live, renderOnce: frame, reseed,
-                  get storm() { return storm; } };
+                  audio: StormAudio, get storm() { return storm; } };
 })();
