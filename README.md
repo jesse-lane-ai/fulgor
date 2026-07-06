@@ -33,7 +33,11 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
   no anvil, mature is the full supercell, dissipating rains out and erodes the
   column until only the glaciated anvil remnant lingers. "Storm lifecycle"
   auto-evolves through the cycle (≈7 min at 1× speed) and then regrows a fresh
-  cell.
+  cell. 🔗 Copy share link puts the storm's seed and every slider/color that
+  defines its look and behavior into the page URL and copies it to the
+  clipboard — open that link anywhere to load the exact same storm. Render
+  quality/scale, sound/volume and playback speed aren't included (those are
+  your local viewing preferences, not part of the storm).
 - **⚡ Randomize everything** — rerolls all colors, storm structure, sky layers,
   sun position and weather settings (leaves speed and render settings alone).
 - **Clouds** — storm size (0.5×–2×, scales the whole cell live; height scales
@@ -61,7 +65,10 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
 - **Render** — quality (raymarch step counts) and resolution scale.
 
 URL overrides: `?quality=minimal|low|medium|high|ultra&scale=0.5` (used for
-weak/software GPUs, which are also auto-detected).
+weak/software GPUs, which are also auto-detected). A share link (see 🔗 Copy
+share link above) adds `seed` plus the storm-identity sliders/colors on top —
+these two sets of overrides are independent, so you can share a storm and
+still get your own quality/scale.
 
 ## How it works
 

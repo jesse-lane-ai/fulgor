@@ -621,6 +621,46 @@
     resize();
   });
 
+  // ---------- Save & share ----------
+  // A storm's whole identity is the seed (which deterministically generates
+  // the layout via genStorm) plus every slider/color that shapes its look
+  // and behavior. Render quality/scale, sound/volume and playback speed are
+  // viewer preferences, not part of the storm, so they're left out — the
+  // same spirit as the existing ?quality=&scale= URL overrides above.
+  const SHARE_FIELDS = [
+    { id: 'size', type: 'range' }, { id: 'density', type: 'range' },
+    { id: 'coverage', type: 'range' }, { id: 'wind', type: 'range' },
+    { id: 'motion', type: 'range' }, { id: 'stage', type: 'range' },
+    { id: 'lifecycle', type: 'check' },
+    { id: 'freq', type: 'range' }, { id: 'intensity', type: 'range' },
+    { id: 'duration', type: 'range' },
+    { id: 'boltColor', type: 'color' }, { id: 'flashColor', type: 'color' },
+    { id: 'ambColor', type: 'color' }, { id: 'sunColor', type: 'color' },
+    { id: 'sunAz', type: 'range' }, { id: 'sunEl', type: 'range' },
+    { id: 'sunMotion', type: 'check' },
+    { id: 'bgClouds', type: 'range' }, { id: 'cirrus', type: 'range' },
+    { id: 'midClouds', type: 'range' }, { id: 'exposure', type: 'range' },
+  ];
+
+  document.getElementById('shareBtn').addEventListener('click', () => {
+    const qs = new URLSearchParams();
+    qs.set('seed', String(params.seed));
+    for (const f of SHARE_FIELDS) {
+      const v = params[f.id];
+      qs.set(f.id, f.type === 'check' ? (v ? '1' : '0') :
+                   f.type === 'color' ? v.replace('#', '') : String(v));
+    }
+    const url = location.origin + location.pathname + '?' + qs.toString();
+    const btn = document.getElementById('shareBtn');
+    const restore = btn.textContent;
+    const flash = () => { btn.textContent = '✅ Copied!'; setTimeout(() => { btn.textContent = restore; }, 1500); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(flash, () => window.prompt('Copy this link:', url));
+    } else {
+      window.prompt('Copy this link:', url);
+    }
+  });
+
   function resize() {
     const dpr = Math.min(window.devicePixelRatio || 1, 2) * params.scale;
     canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
@@ -650,6 +690,45 @@
   const flashColData = new Float32Array(9);
 
   let simT = 0;
+
+  // Apply a shared storm from the URL, if present — replays each field's own
+  // input/change event so it reuses the same listener that already syncs
+  // params + the label text, instead of duplicating that logic here. Every
+  // range value is clamped to its slider's own min/max so a hand-edited or
+  // malformed link can't push the sim out of bounds. (Placed after `simT` is
+  // declared: reseed() reads it, and calling reseed() earlier — before that
+  // `let` runs — hits the temporal dead zone and throws.)
+  {
+    const shareQs = new URLSearchParams(location.search);
+    if (shareQs.has('seed') || SHARE_FIELDS.some(f => shareQs.has(f.id))) {
+      if (shareQs.has('seed')) {
+        const seed = parseInt(shareQs.get('seed'), 10);
+        if (Number.isFinite(seed)) reseed(Math.max(0, Math.min(999999, seed)));
+      }
+      for (const f of SHARE_FIELDS) {
+        if (!shareQs.has(f.id)) continue;
+        const el = document.getElementById(f.id);
+        const raw = shareQs.get(f.id);
+        if (f.type === 'check') {
+          el.checked = raw === '1';
+          el.dispatchEvent(new Event('change'));
+        } else if (f.type === 'color') {
+          if (/^[0-9a-fA-F]{6}$/.test(raw)) {
+            el.value = '#' + raw;
+            el.dispatchEvent(new Event('input'));
+          }
+        } else {
+          const v = parseFloat(raw);
+          if (Number.isFinite(v)) {
+            const lo = parseFloat(el.min), hi = parseFloat(el.max);
+            el.value = Math.min(hi, Math.max(lo, v));
+            el.dispatchEvent(new Event('input'));
+          }
+        }
+      }
+    }
+  }
+
   let last = performance.now() / 1000;
   let fpsAcc = 0, fpsN = 0, fpsLast = last;
   const fpsEl = document.getElementById('fps');
