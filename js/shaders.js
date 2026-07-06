@@ -147,7 +147,11 @@ float shapeField(vec3 p) {
         float ledge = sin(chirp + ph + ang * 0.7) * 0.6
                     + sin(p.y * 2.6 + ph * 0.5 - ang * 0.5) * 0.4;
         float lm = smoothstep(0.02, 0.12, hn) * (1.0 - smoothstep(0.50, 0.75, hn));
-        r *= 1.0 - ledge * 0.15 * lm;
+        // Ease the grooves off on the low downwind side so they don't sever
+        // the shelf cloud from the barrel.
+        float dwn = clamp(u / max(tw.z * w, 0.1), 0.0, 1.0)
+                  * (1.0 - smoothstep(0.20, 0.50, hn));
+        r *= 1.0 - ledge * 0.15 * lm * (1.0 - 0.65 * dwn);
       }
       float vf = smoothstep(-0.04, 0.10, hn) * (1.0 - smoothstep(0.84, 1.03, hn));
       best = smax(best, (1.0 - r) * vf, 0.25);
@@ -176,7 +180,12 @@ float cloudDensity(vec3 p, bool detail) {
   // so noise erosion can't open a sky gap between the curtain and the storm.
   float roofM = 0.0;
   if (uRain.w > 0.0 && p.y > CLOUD_BASE - 0.55 && p.y < CLOUD_BASE + 0.9) {
-    float rr = length(p.xz - uRain.xy) / (uRain.z * 1.5);
+    // Stretched downwind along the shelf so the whole forward-flank ledge
+    // stays welded to the storm with no gaps.
+    vec2 rel = p.xz - uRain.xy;
+    float uu = dot(rel, uShear.xy);
+    float vv = -rel.x * uShear.y + rel.y * uShear.x;
+    float rr = length(vec2(uu / (uu > 0.0 ? 2.4 : 1.0), vv)) / (uRain.z * 1.5);
     if (rr < 1.0) {
       float band = smoothstep(CLOUD_BASE - 0.55, CLOUD_BASE - 0.10, p.y)
                  * (1.0 - smoothstep(CLOUD_BASE + 0.35, CLOUD_BASE + 0.9, p.y));
