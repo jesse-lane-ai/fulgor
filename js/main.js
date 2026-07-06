@@ -262,20 +262,27 @@
   const boltA = new Float32Array(MAX_SEGS * 3);
   const boltB = new Float32Array(MAX_SEGS * 3);
 
+  // Shared midpoint-displacement channel generator: recursively bisects
+  // a-b, displacing the midpoint (full jitter on the two "spread" axes,
+  // damped 0.35x on the third) until `depth` runs out. Used both for CG
+  // bolts (mostly-vertical drop, y is the free axis) and spider-lightning
+  // arms (mostly-horizontal spread, y is the damped axis) — same zigzag
+  // character either way, just given different endpoints.
+  function subdivideBolt(A, B, a, b, depth, amp) {
+    if (depth === 0 || A.length >= MAX_SEGS - 1) { A.push(a); B.push(b); return; }
+    const m = [
+      (a[0] + b[0]) / 2 + (Math.random() - 0.5) * amp,
+      (a[1] + b[1]) / 2 + (Math.random() - 0.5) * amp * 0.35,
+      (a[2] + b[2]) / 2 + (Math.random() - 0.5) * amp,
+    ];
+    subdivideBolt(A, B, a, m, depth - 1, amp * 0.5);
+    subdivideBolt(A, B, m, b, depth - 1, amp * 0.5);
+  }
+
   function genBolt(sx, sy, sz) {
     const A = [], B = [];
-    function subdivide(a, b, depth, amp) {
-      if (depth === 0 || A.length >= MAX_SEGS - 1) { A.push(a); B.push(b); return; }
-      const m = [
-        (a[0] + b[0]) / 2 + (Math.random() - 0.5) * amp,
-        (a[1] + b[1]) / 2 + (Math.random() - 0.5) * amp * 0.35,
-        (a[2] + b[2]) / 2 + (Math.random() - 0.5) * amp,
-      ];
-      subdivide(a, m, depth - 1, amp * 0.5);
-      subdivide(m, b, depth - 1, amp * 0.5);
-    }
     const end = [sx + (Math.random() - 0.5) * 2.2, 0, sz + (Math.random() - 0.5) * 2.2];
-    subdivide([sx, sy, sz], end, 5, 0.85);
+    subdivideBolt(A, B, [sx, sy, sz], end, 5, 0.85);
     const mainCount = A.length;
     const nBranches = 2 + Math.floor(Math.random() * 2);
     for (let k = 0; k < nBranches; k++) {
@@ -287,13 +294,66 @@
         Math.max(p[1] - len, 0.05),
         p[2] + (Math.random() - 0.5) * len * 1.8,
       ];
-      subdivide(p, bend, 2, len * 0.4);
+      subdivideBolt(A, B, p, bend, 2, len * 0.4);
     }
     for (let i = 0; i < A.length; i++) {
       boltA.set(A[i], i * 3);
       boltB.set(B[i], i * 3);
     }
     return { count: A.length, groundPt: end };
+  }
+
+  // Spider lightning: a branching channel that fans out horizontally along
+  // the anvil underside instead of dropping to the ground. Arms are built
+  // separately, then interleaved round-robin into the shared buffers so a
+  // partial reveal (see frame()) grows every arm outward at once, like the
+  // real thing spreading through the cloud rather than one arm finishing
+  // before the next starts.
+  function genSpiderBolt(ox, oy, oz, shearDir) {
+    const A = [], B = [];
+    const baseAng = Math.atan2(shearDir[1], shearDir[0]);
+    const nArms = 4 + Math.floor(Math.random() * 3);
+    const arms = [];
+    for (let k = 0; k < nArms; k++) {
+      // Fan out in a downwind-biased cone (~150°), not a full starburst —
+      // reads as spreading through the anvil, not an isolated firework.
+      const ang = baseAng + (Math.random() - 0.5) * 2.6;
+      const len = 1.8 + Math.random() * 3.4;
+      const end = [
+        ox + Math.cos(ang) * len,
+        oy + (Math.random() - 0.5) * 0.3,
+        oz + Math.sin(ang) * len,
+      ];
+      const armA = [], armB = [];
+      subdivideBolt(armA, armB, [ox, oy, oz], end, 3 + (Math.random() < 0.5 ? 1 : 0), 0.6);
+      // A short secondary offshoot partway along, like a real spider fork.
+      if (armA.length > 1 && Math.random() < 0.6) {
+        const idx = Math.floor(armA.length * (0.3 + Math.random() * 0.4));
+        const p = armA[idx];
+        const blen = len * (0.25 + Math.random() * 0.3);
+        const bang = ang + (Math.random() - 0.5) * 1.6;
+        const bend = [p[0] + Math.cos(bang) * blen, p[1] + (Math.random() - 0.5) * 0.2,
+                       p[2] + Math.sin(bang) * blen];
+        subdivideBolt(armA, armB, p, bend, 2, 0.4);
+      }
+      arms.push({ A: armA, B: armB });
+    }
+    let idx = 0, more = true;
+    outer: while (more) {
+      more = false;
+      for (const arm of arms) {
+        if (idx < arm.A.length) {
+          if (A.length >= MAX_SEGS - 1) break outer;
+          A.push(arm.A[idx]); B.push(arm.B[idx]); more = true;
+        }
+      }
+      idx++;
+    }
+    for (let i = 0; i < A.length; i++) {
+      boltA.set(A[i], i * 3);
+      boltB.set(B[i], i * 3);
+    }
+    return { count: A.length };
   }
 
   const lightning = {
@@ -342,16 +402,21 @@
         ev.lights.push({ slot: slotOf(0), pos: [sx, sy + 0.6, sz], scale: 1.0 });
         ev.lights.push({ slot: slotOf(1), pos: [bolt.groundPt[0], 0.35, bolt.groundPt[2]], scale: 0.7 });
       } else if (Math.random() < 0.3) {
-        // Anvil crawler: a flash spreading through the sheared anvil downwind.
+        // Anvil/spider crawler: a flash spreading through the sheared anvil
+        // downwind. Gets a real branching channel when the shared channel
+        // slot is free (same one-channel-at-a-time rule as CG above) —
+        // otherwise falls back to the plain glow, unchanged from before.
         const m = live.towers.length ? live.towers[0] : storm.towers[0];
-        const reach = 2.0 + Math.random() * 4.0;
-        ev.lights.push({
-          slot: slotOf(0),
-          pos: [m.x + storm.shearDir[0] * reach + (Math.random() - 0.5) * 1.5,
-                m.top * (0.78 + Math.random() * 0.10),
-                m.z + storm.shearDir[1] * reach + (Math.random() - 0.5) * 1.5],
-          scale: 1.0,
-        });
+        const reach = 1.5 + Math.random() * 3.5;
+        const ox = m.x + storm.shearDir[0] * reach + (Math.random() - 0.5) * 2;
+        const oz = m.z + storm.shearDir[1] * reach + (Math.random() - 0.5) * 2;
+        const oy = m.top * (0.78 + Math.random() * 0.10);
+        if (!this.bolt) {
+          const spider = genSpiderBolt(ox, oy, oz, storm.shearDir);
+          this.bolt = { ...spider, kind: 'spider', bornT: simT };
+          ev.isBolt = true;
+        }
+        ev.lights.push({ slot: slotOf(0), pos: [ox, oy, oz], scale: 1.0 });
       } else {
         const y = CLOUD_BASE + 1.0 + Math.random() * Math.max(tw.top - CLOUD_BASE - 2.5, 1.0);
         ev.lights.push({
@@ -854,8 +919,19 @@
     gl.uniform1f(U.uBgClouds, params.bgClouds);
     gl.uniform1f(U.uCirrus, params.cirrus);
     gl.uniform1f(U.uMidClouds, params.midClouds);
-    gl.uniform1i(U.uBoltCount, lightning.bolt ? lightning.bolt.count : 0);
-    gl.uniform3fv(U.uBoltColor, boltCol);
+    // Spider/IC channels grow into view over ~0.22s instead of appearing
+    // instantly (the "crawl" the name refers to — the round-robin segment
+    // interleaving in genSpiderBolt makes a partial reveal spread outward
+    // from the origin in every direction at once) and are tinted with the
+    // cloud-flash color rather than the CG bolt color. CG bolts are
+    // unchanged: instant full reveal, boltColor.
+    const isSpider = lightning.bolt && lightning.bolt.kind === 'spider';
+    const revealed = isSpider
+      ? Math.max(1, Math.ceil(lightning.bolt.count *
+          Math.min((simT - lightning.bolt.bornT) / 0.22, 1)))
+      : (lightning.bolt ? lightning.bolt.count : 0);
+    gl.uniform1i(U.uBoltCount, revealed);
+    gl.uniform3fv(U.uBoltColor, isSpider ? flashCol : boltCol);
     gl.uniform1f(U.uBoltIntensity, lightning.boltI);
     if (lightning.bolt) {
       gl.uniform3fv(U.uBoltA, boltA);
