@@ -201,13 +201,17 @@ float cloudDensity(vec3 p, bool detail) {
       d += clamp((nm - thr) * 3.0, 0.0, 1.0) * vprof * zfade * uDensityMul * 0.6;
     }
   }
-  // Rain shaft / virga under the storm core.
+  // Rain shaft / virga under the storm core: a ragged curtain of hanging
+  // streamers, not a clean ellipse — low sun lights it up and a smooth
+  // analytic edge reads as a floating pancake.
   if (p.y < CLOUD_BASE + 0.2 && uRain.w > 0.0) {
     float r = length(p.xz - uRain.xy) / uRain.z;
     if (r < 1.0) {
       float streak = vnoise(vec3(p.x * 1.8, p.y * 0.15 + uTime * 0.15, p.z * 1.8) + uSeedOffset);
-      float vfade = 1.0 - smoothstep(CLOUD_BASE - 0.45, CLOUD_BASE + 0.2, p.y);
-      d += (1.0 - r) * vfade * (0.35 + 0.65 * streak) * uRain.w * 0.10;
+      float brk = vnoise(vec3(p.x * 0.8, p.y * 0.25, p.z * 0.8) + uSeedOffset * 1.9);
+      float edge = smoothstep(1.0, 0.45, r);
+      float vfade = 1.0 - smoothstep(CLOUD_BASE - 0.65 + brk * 0.45, CLOUD_BASE + 0.2, p.y);
+      d += edge * vfade * (0.35 + 0.65 * streak) * (0.30 + 0.70 * brk) * uRain.w * 0.10;
     }
   }
   return d;
