@@ -83,12 +83,15 @@ still get your own quality/scale.
   displaced onto the forward flank (kept in the storm's own shadow, sun and
   sky ambient both). Cells are analytic profiles blended with
   smooth-max, eroded by domain-warped fBm noise that advects with wind and
-  morphs over time; ~30% of intracloud flashes are anvil crawlers placed in
-  the sheared anvil layer — when no other branched channel is currently lit,
-  these get real spider-lightning geometry (midpoint-displacement arms
-  fanned out and forking through the anvil, reusing the same generator as
-  cloud-to-ground bolts) that visibly grows outward over ~0.2s rather than
-  just glowing. Lighting = sun with a short shadow
+  morphs over time; ~30% of intracloud flashes are spider crawlers weaving
+  along the storm's sides and base — height is power-skewed toward the
+  lower half of the cloud, so the higher up, the steeply lower the chance,
+  and the origin straddles each tower's own radius so it reads as ducking
+  in and out of the cloud surface. When no other branched channel is
+  currently lit, these get real spider-lightning geometry (midpoint-
+  displacement arms fanned out and forking in every direction, reusing the
+  same generator as cloud-to-ground bolts) that visibly grows outward over
+  ~0.2s rather than just glowing. Lighting = sun with a short shadow
   march (Beer–Lambert + multi-scatter floor), sky ambient, up to 3 lightning
   point lights with their own shadow taps, plus a scene-wide flicker term.
   Bolts are rendered analytically as ray-to-segment glow, occluded by the
