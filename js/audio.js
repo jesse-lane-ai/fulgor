@@ -152,8 +152,8 @@ window.StormAudio = (function () {
     if (!enabled || !ctx || ctx.state !== 'running') return;
     const t = ctx.currentTime;
     const set = (bed, v, tc) => bed.gain.gain.setTargetAtTime(v, t, tc || 0.35);
-    set(beds.rain, levels.rain * 0.34);
-    set(beds.rainBody, levels.rain * 0.20);
+    set(beds.rain, levels.rain * 0.17);
+    set(beds.rainBody, levels.rain * 0.10);
     set(beds.wind, 0.05 + levels.wind * 0.30);
     set(beds.ambient, levels.ambient * 0.40);
     // Wind pitch/brightness rises with strength on top of the gust LFOs.
@@ -180,7 +180,7 @@ window.StormAudio = (function () {
     out.connect(pan);
 
     // Dry/wet split: far thunder is nearly all reverberant wash.
-    const dry = ctx.createGain(); dry.gain.value = 0.25 + 0.75 * near;
+    const dry = ctx.createGain(); dry.gain.value = 0.40 + 0.60 * near;
     const wet = ctx.createGain(); wet.gain.value = 0.35 + 0.55 * (1 - near);
     const conv = ctx.createConvolver(); conv.buffer = irBuf;
     pan.connect(dry); dry.connect(comp);
@@ -189,19 +189,26 @@ window.StormAudio = (function () {
     const nodes = [out, pan, dry, wet, conv];
     let tEnd = t0;
 
-    // Crack: sharp bright transient, mostly for close / CG strikes.
-    const crackAmp = (opts.isCG ? 0.9 : 0.45) * near * near * energy;
+    // Crack: the sharp tearing snap of the channel. CG bolts always get a
+    // distinct crack — distance dulls it (highpass cutoff, dry/wet mix)
+    // rather than erasing it, so even a far bolt still snaps before rolling.
+    const crackAmp = (opts.isCG ? 1.15 : 0.45) * (0.3 + 0.7 * near) * energy;
     if (crackAmp > 0.02) {
-      const src = ctx.createBufferSource(); src.buffer = noiseBuf;
-      const hp = ctx.createBiquadFilter();
-      hp.type = 'highpass'; hp.frequency.value = 900 + 2200 * near;
-      const g = ctx.createGain();
-      g.gain.setValueAtTime(0, t0);
-      g.gain.linearRampToValueAtTime(crackAmp, t0 + 0.008);
-      g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.25 + 0.2 * near);
-      src.connect(hp); hp.connect(g); g.connect(out);
-      src.start(t0, Math.random() * 2, 0.6);
-      nodes.push(src, hp, g);
+      const mkCrack = (at, amp, dur) => {
+        const src = ctx.createBufferSource(); src.buffer = noiseBuf;
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass'; hp.frequency.value = 1100 + 2400 * near;
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0, at);
+        g.gain.linearRampToValueAtTime(amp, at + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.001, at + dur);
+        src.connect(hp); hp.connect(g); g.connect(out);
+        src.start(at, Math.random() * 2, dur + 0.1);
+        nodes.push(src, hp, g);
+      };
+      mkCrack(t0, crackAmp, 0.13 + 0.12 * near);
+      // Ragged double-snap on ground strikes.
+      if (opts.isCG) mkCrack(t0 + 0.05 + Math.random() * 0.08, crackAmp * 0.5, 0.09);
       tEnd = Math.max(tEnd, t0 + 0.5);
     }
 
@@ -216,7 +223,7 @@ window.StormAudio = (function () {
       lp.frequency.setValueAtTime(90 + 340 * near, t0);
       lp.frequency.exponentialRampToValueAtTime(45, t0 + dur);
       const g = ctx.createGain();
-      const amp = (0.35 + 0.65 * near) * energy * 0.8;
+      const amp = (0.5 + 0.5 * near) * energy * 1.0;
       g.gain.setValueAtTime(0, t0);
       // Random sub-peaks give the rolling, tumbling character.
       const nLobes = 2 + Math.floor(Math.random() * 3);
