@@ -162,6 +162,28 @@ float shapeField(vec3 p) {
       best = smax(best, os * 0.85, 0.2);
     }
   }
+  // Weld each tower to its neighbor along the flanking line (main->flank1->
+  // flank2->...): a rounded bridge straight along the connecting segment,
+  // independent of the noise threshold, so two overlapping-but-not-quite
+  // footprints can never erode into a see-through hole between them.
+  for (int i = 1; i < 8; i++) {
+    if (i >= uNumTowers) break;
+    vec4 a = uTowers[i - 1];
+    vec4 b = uTowers[i];
+    float top = min(a.w, b.w);
+    float hn = (p.y - CLOUD_BASE) / (top - CLOUD_BASE);
+    if (hn < -0.05 || hn > 1.0) continue;
+    vec2 ab = b.xy - a.xy;
+    float L = length(ab);
+    vec2 dir = ab / max(L, 0.001);
+    float t = clamp(dot(p.xz - a.xy, dir), 0.0, L);
+    float rad = mix(a.z, b.z, t / max(L, 0.001)) * 0.6;
+    float rr = length(p.xz - (a.xy + dir * t)) / max(rad, 0.05);
+    if (rr < 1.0) {
+      float vf = smoothstep(-0.04, 0.10, hn) * (1.0 - smoothstep(0.75, 1.0, hn));
+      best = smax(best, (1.0 - rr) * vf * 0.9, 0.3);
+    }
+  }
   return best;
 }
 

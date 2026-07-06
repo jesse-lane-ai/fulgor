@@ -129,18 +129,23 @@
     const mainTop = 10.5 + rand() * 2.5;
     towers.push({ x: cx, z: cz, r: mainR, top: mainTop, phase: rand() * Math.PI * 2 });
     // Flanking line: a low staircase of cumulus hugging the updraft and
-    // stepping down as it trails upwind — never competing columns.
+    // stepping down as it trails upwind — never competing columns. Spacing
+    // is a fraction of each pair's combined radius, not a fixed distance, so
+    // neighboring footprints always overlap enough to merge with no gap —
+    // regardless of how big or small the random radii happen to roll.
     const nFlank = 2 + Math.floor(rand() * 2);
-    let fd = mainR * (0.5 + rand() * 0.15);
+    let fd = mainR * (0.45 + rand() * 0.12);
+    let prevR = mainR;
     for (let i = 0; i < nFlank; i++) {
-      fd += 1.3 + rand() * 0.6;
+      const r = Math.max(1.9 - i * 0.35 + rand() * 0.25, 0.8);
+      fd += (prevR + r) * (0.45 + rand() * 0.15);
       towers.push({
-        x: cx - sdx * fd + (rand() - 0.5) * 0.6,
-        z: cz - sdz * fd + (rand() - 0.5) * 0.9,
-        r: Math.max(1.9 - i * 0.35 + rand() * 0.25, 0.8),
-        top: CLOUD_BASE + (mainTop - CLOUD_BASE) * (0.34 - i * 0.09) + rand() * 0.6,
+        x: cx - sdx * fd + (rand() - 0.5) * r * 0.3,
+        z: cz - sdz * fd + (rand() - 0.5) * r * 0.35,
+        r, top: CLOUD_BASE + (mainTop - CLOUD_BASE) * (0.34 - i * 0.09) + rand() * 0.6,
         phase: rand() * Math.PI * 2,
       });
+      prevR = r;
     }
 
     // Keep the precip core tucked under the forward half of the base — pushed
