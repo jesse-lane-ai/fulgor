@@ -158,7 +158,18 @@ float cloudDensity(vec3 p, bool detail) {
     float rw = length(p.xz - uWall.xy) / uWall.z;
     if (rw < 1.0) wallM = (1.0 - rw) * smoothstep(0.38, 0.72, p.y) * uWall.w;
   }
-  if (s > 0.01 || wallM > 0.005) {
+  // Roof over the precipitation core: thicken the base right above the rain
+  // so noise erosion can't open a sky gap between the curtain and the storm.
+  float roofM = 0.0;
+  if (uRain.w > 0.0 && p.y > CLOUD_BASE - 0.55 && p.y < CLOUD_BASE + 0.9) {
+    float rr = length(p.xz - uRain.xy) / (uRain.z * 1.5);
+    if (rr < 1.0) {
+      float band = smoothstep(CLOUD_BASE - 0.55, CLOUD_BASE - 0.10, p.y)
+                 * (1.0 - smoothstep(CLOUD_BASE + 0.35, CLOUD_BASE + 0.9, p.y));
+      roofM = (1.0 - rr) * band * uRain.w * 0.5;
+    }
+  }
+  if (s > 0.01 || wallM > 0.005 || roofM > 0.005) {
     vec3 q = p * 0.30 + uSeedOffset;
     q.x += uTime * 0.012 * uWindSpeed;
     q.z += uTime * 0.004 * uWindSpeed;
@@ -185,7 +196,7 @@ float cloudDensity(vec3 p, bool detail) {
       }
     }
     float thr = 0.85 - 0.30 * uCoverage;
-    d = clamp((max(s, 0.0) + wallM * 0.9 - thr * (1.0 - n)) * 2.6, 0.0, 1.0);
+    d = clamp((max(s, 0.0) + wallM * 0.9 + roofM - thr * (1.0 - n)) * 2.6, 0.0, 1.0);
     if (detail && d > 0.0 && d < 0.9) {
       float e = fbm3(q * 4.1 + vec3(uTime * 0.01, 0.0, 0.0));
       d = clamp(d - (1.0 - e) * (1.0 - d) * 0.55 * (1.0 - wallM * 0.5), 0.0, 1.0);

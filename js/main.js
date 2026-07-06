@@ -145,7 +145,7 @@
 
     // Keep the precip core tucked under the forward half of the base — pushed
     // further out it pokes past the cloud edge and glows in low sun.
-    const rainDist = 1.2 + rand() * 0.8;
+    const rainDist = 0.7 + rand() * 0.6;
     // Storm track: roughly downwind, deviated like a right-moving supercell.
     const dev = (rand() - 0.5) * 0.9;
     const cd = Math.cos(dev), sdv = Math.sin(dev);
@@ -156,7 +156,7 @@
       moveDir: [sdx * cd - sdz * sdv, sdx * sdv + sdz * cd],
       meanderPhase: rand() * Math.PI * 2,
       seedOffset: [rand() * 97, rand() * 97, rand() * 97],
-      rain: [cx + sdx * rainDist, cz + sdz * rainDist, mainR * 0.75, 0.7 + rand() * 0.5],
+      rain: [cx + sdx * rainDist, cz + sdz * rainDist, mainR * 0.6, 0.7 + rand() * 0.5],
       wall: [cx - sdx * (0.8 + rand() * 0.6), cz - sdz * (0.8 + rand() * 0.6),
              1.1 + rand() * 0.6, 0.45 + rand() * 0.35],
     };
