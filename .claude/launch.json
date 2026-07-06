@@ -4,8 +4,9 @@
     {
       "name": "thunderstorm",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["-y", "http-server", "-p", "8172", "-c-1", "."],
-      "port": 8172
+      "runtimeArgs": ["-y", "http-server", "-c-1", "."],
+      "port": 8172,
+      "autoPort": true
     }
   ]
 }
