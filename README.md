@@ -19,7 +19,9 @@ No build step, no package manager, no dependencies — it's plain HTML/JS/GLSL.
   equivalent.
 
 **Get the code:** copy or clone this folder — there's no package to install
-inside it, just the static files (`index.html`, `js/`, `reference/`).
+inside it, just the static files (`index.html`, `js/`). A local `reference/`
+folder of tuning photos isn't tracked in the repo (not licensed for
+redistribution) but isn't needed to run the app.
 
 ## Run
 
