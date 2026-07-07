@@ -62,6 +62,7 @@
     stage: 0.5, lifecycle: false,
     sound: false, volume: 0.7,
     mixRain: 1.0, mixWind: 1.0, mixThunder: 1.0, mixAmbient: 1.0,
+    muteThunder: false,
     density: 1.0, coverage: 1.0, size: 1.0,
     freq: 1.0, intensity: 1.0, duration: 1.0,
     boltColor: '#eee9ff', flashColor: '#d7c9ff',
@@ -711,11 +712,19 @@
   // non-default slider positions take effect when sound is switched on).
   const pushMix = () => StormAudio.setMix({
     rain: params.mixRain, wind: params.mixWind,
-    thunder: params.mixThunder, ambient: params.mixAmbient,
+    // Mute forces the thunder bus to 0 without touching the slider value, so
+    // un-muting restores the level the slider is still sitting at.
+    thunder: params.muteThunder ? 0 : params.mixThunder,
+    ambient: params.mixAmbient,
   });
   for (const id of ['mixRain', 'mixWind', 'mixThunder', 'mixAmbient']) {
     document.getElementById(id).addEventListener('input', pushMix);
   }
+  const muteThunderEl = document.getElementById('muteThunder');
+  muteThunderEl.addEventListener('change', () => {
+    params.muteThunder = muteThunderEl.checked;
+    pushMix();
+  });
 
   const camLockEl = document.getElementById('camLock');
   camLockEl.addEventListener('change', () => { camera.lock = camLockEl.checked; });
