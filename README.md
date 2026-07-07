@@ -36,6 +36,17 @@ A local server is required — opening `index.html` directly via `file://` runs
 into browser restrictions on some setups, so serving it over `http://` is the
 reliable path.
 
+## Example storms
+
+Share links (🔗 Copy share link — see Controls below) for a few storms worth
+seeing. These encode seed + every slider/color, but not a hostname, so they
+only resolve while you're running Fulgor locally on the matching port — paste
+one in while `http://localhost:8172` is up, or swap in your own host:port.
+
+- [Large calm-wind supercell at 3am under a reddish near-new moon, with frequent intense lightning](http://127.0.0.1:8172/?seed=851554&size=1.55&density=1.1&coverage=1&wind=0.3&motion=1&stage=0.5&lifecycle=0&freq=2.45&intensity=1.4&duration=1.3&boltColor=ecedf3&flashColor=94a4e2&ambColor=35567d&sunColor=df8976&sunAz=-128.7&sunEl=-36.264074067470894&sunMotion=0&timeOfDay=3.42&cycleSpeed=1&moon=1&moonPhase=0.98&moonColor=e0482c&moonDecouple=0&moonAz=-110&moonEl=30&bgClouds=0.85&cirrus=0.15&midClouds=0.25&exposure=1.1&haze=0.35)
+
+More are collected in [`cool-storms.txt`](cool-storms.txt) as they turn up.
+
 ## Controls
 
 - **Free camera** — drag to look, scroll to zoom, WASD to fly, Space/C for
