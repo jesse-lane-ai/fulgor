@@ -1,5 +1,7 @@
 # Fulgor
 
+![Fulgor storm screenshot](assets/fulgor-screenshot1.jpg)
+
 Real-time volumetric cumulonimbus thunderstorm simulation — a distant storm seen
 from ground level, with evolving clouds, intracloud flashes that light the cloud
 interior, and branched cloud-to-ground lightning bolts. Pure JavaScript + WebGL2,
