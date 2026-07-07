@@ -61,16 +61,18 @@ then open http://localhost:8172. (Or use the Claude Code preview: server name
   reddening glow around the sun through golden hour, and a collapse into
   indigo/purple twilight — then true dark, star-filled night — once the sun
   sinks below the horizon (see "Sky model" below).
-- **Moon** — a 🌙 Moon toggle renders a moon disc in the sky (soft limb, faint
-  corona, subtle maria) with a **Moon phase** slider (0 new → 0.5 full → 1 new)
-  that shades a correct curved terminator, crescent through gibbous, plus a hint
-  of earthshine on the dark limb near full. A **Moon color** picker tints both
-  the disc and the moonlight (default pale ivory; push it to harvest-orange or
-  blood-moon). By default the moon is **astronomically coupled** to the clock:
-  its rise/set offset follows the phase, so a full moon rises opposite the sun
-  (high at midnight) and a new moon rides with the sun. **Decouple moon** frees
-  the Moon azimuth/height sliders so you can pin the moon anywhere for an
-  artistic look, phase and position independent of the clock. Moonlight lights
+- **Moon** — a 🌙 Moon toggle renders a moon disc in the sky (subtle maria) with
+  a **Moon phase** slider (0 new → 0.5 full → 1 new) that shades a correct
+  curved terminator, crescent through gibbous, plus a hint of earthshine near
+  full. Rendering is additive — only the lit crescent adds light, melting into
+  a single soft glow, so the shadowed part is practically invisible (no dark
+  disc, no outline ring). A **Moon color** picker tints both the disc and the
+  moonlight (default pale ivory; push it to harvest-orange or blood-moon). By
+  default the moon is **coupled to the clock** — it rides ~12h opposite the sun
+  (up at night, high at midnight, down through the day) — while the phase
+  slider only changes the lit fraction, never the position. **Decouple moon**
+  frees the Moon azimuth/height sliders so you can pin the moon anywhere for an
+  artistic look. Moonlight lights
   the night: at a bright-enough phase and elevation the moon casts a cool, dim
   directional light through the same cloud shadow-march as the sun, so cloud
   tops facing the moon are faintly rim-lit and self-shadow — night is no longer

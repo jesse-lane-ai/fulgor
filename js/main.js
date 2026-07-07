@@ -879,15 +879,14 @@
     const el = MAX_DAY_EL * Math.sin((hour - 6) / 24 * 2 * Math.PI);
     return [az, el];
   }
-  // Moon az/el. Coupled to the sun by phase: a full moon (phase 0.5) rides
-  // ~12h opposite the sun (rises at sunset, high at midnight); a new moon
-  // (phase 0/1) rides with the sun. The offset is 24h*(phase) hours, so the
-  // moon's own arc is the sun arc evaluated at hour - offset. Decoupling lets
-  // the user pin moon az/el/phase for a chosen artistic look.
+  // Moon az/el. Coupled to the clock but NOT to phase: the moon rides ~12h
+  // opposite the sun (rises at sunset, high at midnight, down through the day),
+  // so it's the night moon — and the Moon phase slider only changes the lit
+  // fraction, never the position. Decoupling lets the user pin moon az/el for
+  // a chosen artistic look, still with phase independent.
   function moonAzEl() {
     if (params.moonDecouple) return [params.moonAz, params.moonEl];
-    const offset = 24 * params.moonPhase;          // full moon -> 12h lag
-    return sunAzEl(params.timeOfDay - offset);
+    return sunAzEl(params.timeOfDay - 12);
   }
   const flashPosData = new Float32Array(12);
   const flashColData = new Float32Array(9);

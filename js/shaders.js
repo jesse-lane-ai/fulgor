@@ -396,55 +396,41 @@ vec3 skyColor(vec3 rd) {
     }
   }
   // Moon disc: a small sphere on the sky sphere. We reconstruct a hemisphere
-  // normal across the disc and light it by uMoonLightDir (the sun) so the
-  // terminator is a real curved great-circle — crescent through gibbous — and
-  // add a soft limb + faint corona. uMoonPhase < 0 means the moon is off.
+  // normal across the disc and light it by uMoonLightDir so the terminator is
+  // a real curved great-circle (crescent → gibbous). Compositing is purely
+  // ADDITIVE: only the lit crescent adds light and it melts into a single
+  // smooth glow, so the shadowed part just blends into that glow — practically
+  // invisible, with no dark disc and no outline ring. uMoonPhase < 0 = off.
   if (uMoonPhase >= 0.0) {
     float md = dot(rd, uMoonDir);
-    // Angular radius of the disc (~a bit larger than real, for presence).
+    float fullness = 1.0 - abs(uMoonPhase - 0.5) * 2.0;   // 0 new … 1 full
+    // One continuous glow bloom (no separate corona ring → no visible edge).
+    float glow = pow(max(md, 0.0), 240.0);
+    col += uMoonColor * glow * 0.05 * (0.45 + 0.55 * fullness);
     const float MR = 0.999;            // cos of the disc's angular radius (~5° wide)
     if (md > MR - 0.02) {
-      // Build a disc-local frame: mu/mv span the plane facing the viewer.
+      // Disc-local frame: mu/mv span the plane facing the viewer.
       vec3 mu = normalize(cross(uMoonDir, vec3(0.0, 1.0, 0.0)) + vec3(1e-4));
       vec3 mv = cross(uMoonDir, mu);
-      // Position on the disc, normalized so the rim sits at |d|=1.
-      float ang = acos(clamp(md, -1.0, 1.0));
       float rimAng = acos(MR);
       vec2 d = vec2(dot(rd, mu), dot(rd, mv)) / max(sin(rimAng), 1e-3);
       float rr = length(d);
-      if (rr <= 1.15) {
-        // Hemisphere normal of the sphere facing us at this disc point. The
-        // visible near hemisphere bulges toward the viewer, i.e. around
-        // -uMoonDir, so a full moon (sun behind the viewer, sun dir ≈
-        // -uMoonDir) lights this whole face — the correct terminator sweep.
-        float z = sqrt(max(1.0 - min(rr * rr, 1.0), 0.0));
+      if (rr <= 1.0) {
+        // Near-hemisphere normal facing the viewer; Lambert against the moon
+        // light direction sweeps the curved terminator across the disc.
+        float z = sqrt(max(1.0 - rr * rr, 0.0));
         vec3 n = normalize(mu * d.x + mv * d.y - uMoonDir * z);
-        // Lit fraction: Lambert against the sun direction. The dot product
-        // sweeps the terminator across the disc as the phase (sun-moon
-        // geometry) changes, giving the correct curved crescent/gibbous.
-        float lit = clamp(dot(n, uMoonLightDir) * 0.5 + 0.5, 0.0, 1.0);
-        lit = smoothstep(0.44, 0.58, lit);       // soft, curved terminator
-        // Subtle maria mottling + limb darkening on the lit face.
+        float lit = smoothstep(0.44, 0.58,
+                    clamp(dot(n, uMoonLightDir) * 0.5 + 0.5, 0.0, 1.0));
         float maria = 0.82 + 0.18 * vnoise(n * 6.0 + uSeedOffset);
-        float limb = mix(1.0, 0.72, smoothstep(0.55, 1.0, rr));
-        vec3 face = uMoonColor * maria * limb;
-        // Soft anti-aliased disc edge.
-        float disc = 1.0 - smoothstep(0.985, 1.02, rr);
-        // The moon only paints where it's lit — the shadowed limb is left
-        // transparent so the sky shows through and it reads as practically
-        // invisible. A whisper of earthshine near full keeps the dark limb
-        // from cutting hard rather than rendering a visible dark disc.
-        float earth = (1.0 - lit) * (1.0 - abs(uMoonPhase - 0.5) * 2.0) * 0.03;
-        float alpha = disc * clamp(lit + earth, 0.0, 1.0);
-        col = mix(col, face, alpha);
-        // Faint corona / halo bleeding just outside the disc.
-        float corona = exp(-(rr - 1.0) * 9.0) * (1.0 - disc) * 0.10;
-        col += uMoonColor * corona * (0.4 + 0.6 * (1.0 - abs(uMoonPhase - 0.5) * 2.0));
+        // Soft outer edge so the lit limb melts into the glow — no hard rim.
+        float disc = 1.0 - smoothstep(0.90, 1.0, rr);
+        // Additive: the lit crescent is bright; the shadow side adds only a
+        // trace of earthshine near full, so it stays practically invisible.
+        float bright = lit * maria + (1.0 - lit) * fullness * 0.02;
+        col += uMoonColor * bright * disc * 1.2;
       }
     }
-    // Wider, very soft glow around the moon regardless of exact disc math.
-    float glow = pow(max(md, 0.0), 220.0);
-    col += uMoonColor * glow * 0.06 * (1.0 - abs(uMoonPhase - 0.5) * 2.0);
   }
 
   // High, streaky cirrus sheet drifting with the wind.
