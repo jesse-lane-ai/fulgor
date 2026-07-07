@@ -5,6 +5,20 @@ from ground level, with evolving clouds, intracloud flashes that light the cloud
 interior, and branched cloud-to-ground lightning bolts. Pure JavaScript + WebGL2,
 no dependencies. Look is tuned against the photos in `reference/`.
 
+## Install
+
+No build step, no package manager, no dependencies — it's plain HTML/JS/GLSL.
+
+**Requirements:**
+- A recent Chrome, Edge, or Firefox with WebGL2 (the app checks on load and
+  shows a message if it's unavailable).
+- [Node.js](https://nodejs.org) (for the `npx` static-server command below) —
+  optional if you use a different local server or your editor's "Live Server"
+  equivalent.
+
+**Get the code:** copy or clone this folder — there's no package to install
+inside it, just the static files (`index.html`, `js/`, `reference/`).
+
 ## Run
 
 Any static file server works:
@@ -15,6 +29,10 @@ npx -y http-server -p 8172 -c-1 .
 
 then open http://localhost:8172. (Or use the Claude Code preview: server name
 `thunderstorm` in `.claude/launch.json`.)
+
+A local server is required — opening `index.html` directly via `file://` runs
+into browser restrictions on some setups, so serving it over `http://` is the
+reliable path.
 
 ## Controls
 
