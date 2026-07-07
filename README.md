@@ -1,4 +1,4 @@
-# Thunderstorm
+# Fulgor
 
 Real-time volumetric cumulonimbus thunderstorm simulation — a distant storm seen
 from ground level, with evolving clouds, intracloud flashes that light the cloud
@@ -28,7 +28,7 @@ npx -y http-server -p 8172 -c-1 .
 ```
 
 then open http://localhost:8172. (Or use the Claude Code preview: server name
-`thunderstorm` in `.claude/launch.json`.)
+`fulgor` in `.claude/launch.json`.)
 
 A local server is required — opening `index.html` directly via `file://` runs
 into browser restrictions on some setups, so serving it over `http://` is the

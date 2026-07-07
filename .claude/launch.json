@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "thunderstorm",
+      "name": "fulgor",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["-y", "http-server", "-c-1", "."],
       "port": 8172,
